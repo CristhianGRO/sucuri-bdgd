@@ -156,6 +156,11 @@ class Handler(SimpleHTTPRequestHandler):
         self.service=service
         super().__init__(*args,directory=str(ROOT/'web'),**kwargs)
 
+    def log_message(self, format, *args):
+        # PyInstaller's windowed app has no stderr; request logging must not break HTTP.
+        if sys.stderr is not None:
+            super().log_message(format, *args)
+
     def end_headers(self):
         if self.headers.get('Origin') == PAGES_ORIGIN and self.access is not None:
             self.send_header('Access-Control-Allow-Origin',PAGES_ORIGIN)

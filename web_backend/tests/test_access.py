@@ -4,7 +4,7 @@ import threading
 import unittest
 from functools import partial
 from http.server import ThreadingHTTPServer
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from web_backend.access import Access, PAGES_ORIGIN
 from web_backend.server import Handler
 
@@ -37,6 +37,10 @@ class BrowserAccess(unittest.TestCase):
         self.assertEqual(self.request('GET','/api/datasets')[0],200)
         self.assertEqual(self.request('GET','/api/datasets',{'Host':'evil.example'})[0],403)
         self.assertEqual(self.request('GET','/api/datasets',{'Sec-Fetch-Site':'cross-site'})[0],403)
+    def test_windowed_app_without_console(self):
+        with patch('sys.stderr',None):
+            self.assertEqual(self.request('GET','/api/datasets')[0],200)
+
     def test_attempt_limit_and_renewal(self):
         for _ in range(5):
             with self.assertRaises(ValueError):self.access.pair('invalid')
