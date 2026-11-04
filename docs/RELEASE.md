@@ -1,4 +1,4 @@
-Baixe **SUCURI-Local-Windows.zip**, extraia todo o conteúdo e abra **SUCURI Local.exe**.
+Baixe **SUCURI-Local-Windows.zip**, extraia todo o conteúdo em uma pasta Windows local (C: ou D:, fora do WSL) e abra **SUCURI Local.exe**.
 
 1. Escolha uma pasta para os dados (por exemplo `D:\SUCURI`).
 2. Clique em **Iniciar serviço**, depois em **Copiar código** e **Abrir site**.

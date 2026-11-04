@@ -26,6 +26,8 @@ def dependency_status():
     for name in ('pandas', 'numpy', 'networkx', 'scipy', 'pyproj', 'fiona', 'shapely'):
         try:
             importlib.import_module(name)
+            if name == 'scipy':
+                importlib.import_module('scipy.optimize')
         except Exception as exc:
             problems[name] = str(exc)
     return problems

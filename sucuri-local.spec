@@ -1,10 +1,10 @@
 # Build with: python -m PyInstaller sucuri-local.spec
-from PyInstaller.utils.hooks import collect_all, copy_metadata
+from PyInstaller.utils.hooks import collect_all, copy_metadata, collect_submodules
 from pathlib import Path
 
 datas=[('web','web'),('core','core'),('app/controller.py','app'),('app/utils.py','app'),('web_backend/worker.py','web_backend'),('web_backend/result_cache.py','web_backend')]
 binaries=[]
-hiddenimports=[]
+hiddenimports=collect_submodules('scipy._external', filter=lambda name: '.tests' not in name)
 for package in ('fiona','pyproj','shapely'):
     d,b,h=collect_all(package);datas+=d;binaries+=b;hiddenimports+=h
 for package in ('pandas','numpy','networkx','scipy','pyproj','fiona','shapely'):

@@ -8,7 +8,7 @@ Explore redes de distribuição em um mapa, selecione alimentadores e exporte Ge
 
 O site funciona como visualizador sem instalar nada: experimente a rede fictícia ou abra um GeoJSON. Para baixar e converter BDGD, conecte o aplicativo local:
 
-1. Baixe o ZIP acima e **extraia toda a pasta**. Abra `SUCURI Local.exe` (Windows x64).
+1. Baixe o ZIP acima e **extraia toda a pasta**. Abra `SUCURI Local.exe` (Windows x64). Extraia o aplicativo em uma pasta Windows, como Downloads ou `D:\Aplicativos\SUCURI`, fora de pastas de rede/WSL.
 2. Escolha a pasta dos dados. Se houver disco D, a sugestão é `D:\SUCURI`; você pode escolher outro disco. Clique em **Iniciar serviço**.
 3. Clique em **Copiar código**, depois **Abrir site**. Cole o código em **Conectar meu computador** e clique em **Conectar computador**.
 4. Quando o navegador pedir acesso à rede local, permita. Mantenha o aplicativo aberto enquanto usar o processamento.
@@ -42,6 +42,7 @@ A preferência de pasta fica em `%LOCALAPPDATA%/SUCURI/settings.json` no Windows
 - **Failed to fetch / sem resposta:** confirme que o aplicativo mostra “Serviço ativo”. Autorize o acesso à rede local nas permissões do site no navegador. Atualize a página e tente novamente.
 - **Navegador bloqueia a conexão:** no aplicativo, clique em **Abrir versão local**. A mesma interface abre em `http://127.0.0.1:8081/` e usa o mesmo armazenamento, sem precisar de código. Esse é também o caminho recomendado para navegadores sem suporte à conexão entre site público e localhost.
 - **Código incorreto ou expirado:** clique em **Novo código** no aplicativo. Cada código dura 10 minutos, pode ser usado uma vez e bloqueia após cinco tentativas. Reiniciar o aplicativo invalida conexões anteriores.
+- **Erro de DLL ao abrir pela pasta do WSL:** extraia o aplicativo em uma pasta Windows local (C: ou D:). As bibliotecas nativas podem não carregar por caminhos `\\wsl.localhost`.
 - **Porta 8081 ocupada:** feche outra instância do aplicativo ou o servidor SUCURI iniciado no terminal. O aplicativo não encerra automaticamente programas de terceiros.
 - **Sem bases disponíveis:** importe uma no painel ANEEL. Para CSVs já preparados, coloque cada base em `bases/NOME_DA_BASE/`, incluindo `CTMT.csv` e as demais tabelas necessárias.
 - **Elementos sem coordenadas:** consulte o relatório. A topologia pode conter nós sem posição; não inventamos coordenadas para exibi-los no mapa.
