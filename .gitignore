@@ -1,0 +1,24 @@
+# Only application source belongs in the public repository.
+.runtime/
+bdgd/
+Dados_BDGD/
+data/
+cache/
+Old/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+_site/
+*.zip
+*.gdb/
+*.csv
+*.dad
+*.kmz
+*.geojson
+.env
+.env.*
+*.log
+.ipynb_checkpoints/

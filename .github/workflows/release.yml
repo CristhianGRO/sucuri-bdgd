@@ -1,0 +1,47 @@
+name: Aplicativo Windows
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r web_backend/requirements.txt pyinstaller==6.16.0
+      - run: python -m unittest discover -s web_backend/tests -v
+      - run: python -m PyInstaller sucuri-local.spec --noconfirm
+      - name: Conferir aplicativo empacotado
+        shell: pwsh
+        run: |
+          $smokeRoot = Join-Path $env:RUNNER_TEMP 'sucuri-smoke'
+          $exe = Join-Path $PWD 'dist/SUCURI Local/SUCURI Local.exe'
+          $process = Start-Process -FilePath $exe -ArgumentList @('--serve','--port','18081','--data',"$smokeRoot/bases",'--runtime',"$smokeRoot/runtime") -PassThru -WindowStyle Hidden
+          try {
+            $healthy = $false
+            for ($i = 0; $i -lt 60; $i++) {
+              Start-Sleep -Seconds 2
+              try {
+                $response = Invoke-RestMethod http://127.0.0.1:18081/api/health
+                if (!$response.process_available -or !$response.import_available) { throw ($response.dependency_errors | ConvertTo-Json) }
+                $healthy = $true
+                break
+              } catch { if ($process.HasExited) { throw 'Aplicativo encerrou durante o teste' } }
+            }
+            if (!$healthy) { throw 'Aplicativo não respondeu com dependências completas' }
+          } finally { if (!$process.HasExited) { Stop-Process -Id $process.Id } }
+      - run: Compress-Archive -Path 'dist/SUCURI Local/*' -DestinationPath SUCURI-Local-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SUCURI-Local-Windows
+          path: SUCURI-Local-Windows.zip
+      - name: Publicar versão
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create ${{ github.ref_name }} SUCURI-Local-Windows.zip --title "SUCURI Local ${{ github.ref_name }}" --notes-file docs/RELEASE.md

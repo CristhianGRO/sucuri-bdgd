@@ -1,0 +1,7 @@
+pandas>=1.5
+numpy>=1.23
+networkx>=2.8
+scipy>=1.9
+pyproj>=3.4
+fiona>=1.9
+shapely>=2
