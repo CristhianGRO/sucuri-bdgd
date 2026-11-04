@@ -1,6 +1,6 @@
 import {api,pair,downloadResult,isLocal} from './api.mjs';
 const $=id=>document.getElementById(id);
-let next=-1, query='', active=false, catalogItems=[],cacheCheck=0;
+let basesPath='', next=-1, query='', active=false, catalogItems=[],cacheCheck=0;
 async function checkCache(){
  const token=++cacheCheck;const dataset=$('dataset').value,feeder=$('source-feeder').value;
  $('cache-note').textContent='';if(!dataset||!feeder)return;
@@ -10,7 +10,7 @@ async function checkCache(){
 }
 $('force-process').onchange=checkCache;$('source-feeder').onchange=checkCache;$('crs').onchange=checkCache;
 const note=message=>{$('api-note').textContent=message;};
-async function datasets(preferred){const items=await api('/api/datasets');$('dataset').replaceChildren(new Option('Selecione uma base',''),...items.map(i=>new Option(i.title,i.id)));if(preferred)$('dataset').value=preferred;await feeders();}
+async function datasets(preferred){const items=await api('/api/datasets');if(!items.length)note(`Nenhuma base encontrada em ${basesPath}. Baixe uma em “Obter base da ANEEL” ou copie as pastas das bases antigas (com CTMT.csv) para esse diretório e atualize a página.`);$('dataset').replaceChildren(new Option('Selecione uma base',''),...items.map(i=>new Option(i.title,i.id)));if(preferred)$('dataset').value=preferred;await feeders();}
 async function feeders(){const id=$('dataset').value;$('source-feeder').replaceChildren();if(!id){cacheCheck++;$('cache-note').textContent='';return;}const items=await api(`/api/feeders?dataset=${encodeURIComponent(id)}`);if($('dataset').value!==id)return;$('source-feeder').replaceChildren(...items.map(i=>new Option(`${i.id} · ${i.name}`,i.id)));if(id.startsWith('ANEEL_'))$('crs').value='EPSG:4326';await checkCache();}
 $('dataset').onchange=()=>feeders().catch(e=>note(e.message));
 async function watch(id,{cached=false,add=true}={}){
@@ -35,7 +35,7 @@ $('search').onclick=()=>{query=$('catalog-query').value;search();};$('next').onc
 $('catalog-query').onkeydown=e=>{if(e.key==='Enter')$('search').click();};
 $('import').onclick=()=>{const id=$('catalog-results').value;if(id)submit('import',{item_id:id});};
 async function connect(){
- const health=await api('/api/health');
+ const health=await api('/api/health');basesPath=health.storage.bases;
  $('connection').textContent='Python conectado';$('processing').disabled=health.process_available===false;$('remote').disabled=!health.import_available;
  $('local-status').textContent=`Dados neste computador: ${health.storage.bases}`;
  $('setup').open=false;

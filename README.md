@@ -23,6 +23,20 @@ Abra novamente o SUCURI Local e inicie o serviço. As bases e os resultados ante
 
 Para comparar alimentadores, mantenha **Adicionar sem substituir o mapa** marcado e carregue outros alimentadores. Use **Redes carregadas** para ocultar ou remover redes da visualização; isso não apaga os arquivos salvos. Selecione um alimentador em **Alimentador no mapa** para exportar seu GeoJSON ou KMZ; **Fluxo ↓** baixa os arquivos de entrada daquele processamento.
 
+### Bases que já eram usadas no projeto antigo
+
+O aplicativo portátil não inclui nem encontra automaticamente a pasta `Dados_BDGD` de outra instalação. Se você escolheu `D:\SUCURI` como pasta dos dados, copie os CSVs das bases antigas mantendo esta estrutura:
+
+```text
+D:\SUCURI\bases\CPFL_PAULISTA\CTMT.csv
+D:\SUCURI\bases\CPFL_PAULISTA\SSDMT.csv
+... demais CSVs da mesma base ...
+D:\SUCURI\bases\CEEE_EQUATORIAL\CTMT.csv
+... demais CSVs da mesma base ...
+```
+
+Aguarde a cópia terminar e atualize a página do site. Não é necessário baixar as bases novamente. Não coloque a pasta intermediária `Dados_BDGD` dentro de `bases`; cada distribuidora deve aparecer diretamente em `bases`. Os resultados antigos não são apagados, mas mudar o caminho da base ou a versão do motor pode exigir um primeiro reprocessamento para criar um cache compatível.
+
 ### Onde ficam os arquivos?
 
 Na pasta escolhida no aplicativo:
