@@ -41,6 +41,8 @@ jobs:
               if ($state.status -eq 'failed') { break }
             }
             if ($state.status -ne 'failed' -or $state.error -notmatch 'ArcGIS') { throw 'O processo Python empacotado não executou a tarefa de validação' }
+            python tools/smoke_portable.py --url http://127.0.0.1:18081 --data "$smokeRoot/bases"
+            if ($LASTEXITCODE -ne 0) { throw 'Falha no processamento completo empacotado' }
           } finally { if (!$process.HasExited) { Stop-Process -Id $process.Id } }
       - run: Compress-Archive -Path 'dist/SUCURI Local/*' -DestinationPath SUCURI-Local-Windows.zip
       - uses: actions/upload-artifact@v4
