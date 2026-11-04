@@ -34,6 +34,13 @@ jobs:
               } catch { if ($process.HasExited) { throw 'Aplicativo encerrou durante o teste' } }
             }
             if (!$healthy) { throw 'Aplicativo não respondeu com dependências completas' }
+            $job = Invoke-RestMethod http://127.0.0.1:18081/api/jobs -Method Post -ContentType 'application/json' -Body '{"kind":"import","args":{"item_id":"invalid-smoke-id"}}'
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 1
+              $state = Invoke-RestMethod "http://127.0.0.1:18081/api/jobs/$($job.id)"
+              if ($state.status -eq 'failed') { break }
+            }
+            if ($state.status -ne 'failed' -or $state.error -notmatch 'ArcGIS') { throw 'O processo Python empacotado não executou a tarefa de validação' }
           } finally { if (!$process.HasExited) { Stop-Process -Id $process.Id } }
       - run: Compress-Archive -Path 'dist/SUCURI Local/*' -DestinationPath SUCURI-Local-Windows.zip
       - uses: actions/upload-artifact@v4
