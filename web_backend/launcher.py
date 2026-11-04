@@ -14,7 +14,7 @@ from .worker import ROOT
 SITE = 'https://cristhiangro.github.io/sucuri-bdgd/'
 
 def main():
-    root=tk.Tk();root.title('SUCURI Local');root.geometry('640x470');root.minsize(580,430)
+    root=tk.Tk();root.title('SUCURI Local');root.geometry('640x540');root.minsize(580,520)
     frame=ttk.Frame(root,padding=24);frame.pack(fill='both',expand=True)
     ttk.Label(frame,text='SUCURI Local',font=('Segoe UI',22,'bold')).pack(anchor='w')
     ttk.Label(frame,text='Seus dados e o processamento ficam neste computador.').pack(anchor='w',pady=(4,18))

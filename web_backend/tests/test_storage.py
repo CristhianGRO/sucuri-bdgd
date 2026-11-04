@@ -7,7 +7,7 @@ from web_backend.server import Service
 class StorageTests(TestCase):
     def test_new_storage_takes_priority_and_legacy_is_readable(self):
         with tempfile.TemporaryDirectory() as tmp, patch('web_backend.server.ProcessPoolExecutor'):
-            root=Path(tmp);new=root/'new';old=root/'old'
+            root=Path(tmp).resolve();new=root/'new';old=root/'old'
             for base,feed in [(new/'SHARED','NEW'),(old/'SHARED','OLD'),(old/'LEGACY','L1')]:
                 base.mkdir(parents=True);(base/'CTMT.csv').write_text('COD_ID,NOME\n'+feed+',name\n')
             service=Service(new,root/'runtime',legacy_data=old)
