@@ -1,6 +1,7 @@
 import {feederOf,validate} from './model.mjs';
 export const mapFeederOf=f=>JSON.stringify([f._sucuri_dataset??'',feederOf(f)]);
 export const selectMapFeeder=(data,key)=>({type:'FeatureCollection',features:data.features.filter(f=>mapFeederOf(f)===key).map(({_sucuri_dataset,...f})=>f)});
+export const visibleSelection=(items,selectedKey)=>items.some(item=>item.key===selectedKey)?selectedKey:'';
 export class NetworkCollection {
   constructor(){this.items=new Map();}
   add(data,dataset,label,download=null,replace=false){

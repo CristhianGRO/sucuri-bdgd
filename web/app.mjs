@@ -1,7 +1,7 @@
 import {downloadResult} from './api.mjs';
 import {categories,category,symbolSVG} from './symbology.mjs';
 import {validate,toKML,demoData} from './model.mjs';
-import {NetworkCollection,mapFeederOf as feederOf,selectMapFeeder as selected} from './networks.mjs';
+import {NetworkCollection,mapFeederOf as feederOf,selectMapFeeder as selected,visibleSelection} from './networks.mjs';
 const $=id=>document.getElementById(id);
 function status(message){$('status').textContent=message;}
 if(!window.L){status('Não foi possível carregar o mapa. Verifique a conexão e recarregue a página.');throw Error('Leaflet unavailable');}
@@ -75,8 +75,7 @@ function refreshNetworks(fit=true){
   data=networks.visibleData();
   const visible=[...networks.items.values()].filter(item=>item.visible);
   $('feeder').replaceChildren(new Option('Todos os alimentadores',''),...visible.map(item=>new Option(`${item.dataset} / ${item.feeder}`,item.key)));
-  if(visible.some(item=>item.key===previous))$('feeder').value=previous;
-  else if(visible.length===1)$('feeder').value=visible[0].key;
+  $('feeder').value=visibleSelection(visible,previous);
   $('feeders').textContent=visible.length;
   $('source').textContent=visible.length===1?visible[0].label:`${visible.length} alimentadores visíveis · ${networks.items.size} carregados`;
   $('network-list').replaceChildren();
