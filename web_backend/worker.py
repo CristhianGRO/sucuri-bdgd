@@ -345,6 +345,8 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
             dataset = safe_child(data_root, args['dataset'])
             ctmt = args['feeder']
             safe_child(dataset, ctmt)
+            if migrate_consumer_table(dataset, log):
+                log('UCBT migrada da GDB original; incluindo consumidores no reprocessamento.')
             ctrl = Controller(log)
             ctrl.base_path = str(data_root)
             result = ctrl.run_feeder_process(dataset.name, ctmt, '', True, 'Modelo Completo', output_base=str(job / 'output'), strict=True)
