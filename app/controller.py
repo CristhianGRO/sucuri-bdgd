@@ -46,7 +46,7 @@ class Controller:
         bad = 0
 
         for n,d in G.nodes(data=True):
-            if d.get("tipo_no")=="UCBT":
+            if d.get("ucbt_row"):
                 if not nx.has_path(G, root, n):
                     bad += 1
 

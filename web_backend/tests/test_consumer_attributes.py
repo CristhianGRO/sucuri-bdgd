@@ -17,6 +17,8 @@ class ConsumerAttributes(TestCase):
         LegacyTopology.expand_lv_network(graph,pd.DataFrame(),pd.DataFrame(),consumers,pd.DataFrame(),pd.DataFrame())
         self.assertEqual(len(graph.nodes['PAC_BT']['ucbt_rows']),2)
         self.assertEqual(graph.nodes['PAC_BT']['ucbt_row']['COD_ID'],'UC-1')
+        self.assertTrue(graph.nodes['PAC_BT']['has_ucbt'])
+        self.assertNotEqual(graph.nodes['PAC_BT'].get('tipo_no'), 'UCBT')
 
     def test_class_is_preserved_without_dumping_original_consumer_record(self):
         graph=nx.Graph();graph.add_node('N1',tipo_no='UCBT',x=-51,y=-30,ucbt_row={'CLAS_SUB':'CO1','FAS_CON':'AB','CEP':'private','TIP_CC':'COM'})
@@ -73,3 +75,17 @@ class ConsumerAttributes(TestCase):
         self.assertTrue(anchors[0]['properties']['position_estimated'])
         self.assertEqual(anchors[0]['properties']['anchor_pac'],'BAR')
         self.assertNotEqual(anchors[0]['geometry']['coordinates'],[-51,-30])
+
+    def test_original_geometry_keeps_calculated_substation_and_low_voltage_nodes(self):
+        graph=nx.Graph()
+        graph.add_node('SE',tipo_no='Substation',x=-51,y=-30)
+        graph.add_node('BT',tipo_no='PAC_LV',x=-51.001,y=-30.001)
+        graph.add_edge('SE','BT',tipo='SSDBT')
+        with tempfile.TemporaryDirectory() as root:
+            output=Path(root)/'network.geojson'
+            output.write_text(json.dumps({'type':'FeatureCollection','features':[]}),encoding='utf-8')
+            append_consumer_visuals(output,graph,'F1','EPSG:4326')
+            features=json.loads(output.read_text(encoding='utf-8'))['features']
+        nodes={feature['properties']['COD_ID']:feature['properties'] for feature in features}
+        self.assertEqual(nodes['SE']['tipo_no'],'Substation')
+        self.assertEqual(nodes['BT']['tipo_no'],'PAC_LV')

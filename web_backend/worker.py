@@ -353,16 +353,40 @@ def graph_geojson(graph, ctmt, crs):
 
 
 def append_consumer_visuals(path, graph, ctmt, crs):
-    """Acrescenta âncoras de UCs e resumos aos traços originais BDGD."""
+    """Acrescenta nós topológicos, âncoras de UCs e resumos à BDGD.
+
+    O recorte GIS preserva os traçados reais, mas nem todas as barras são
+    feições espaciais exportáveis. Os pontos gerados pelo grafo completam a
+    leitura elétrica: subestação, nós MT e barras BT, inclusive onde há UCs.
+    """
     generated, _ = graph_geojson(graph, ctmt, crs)
     anchors = [feature for feature in generated['features'] if feature['properties'].get('tipo') == 'ConsumerAnchor']
+    graph_nodes = [
+        feature for feature in generated['features']
+        if feature['geometry'].get('type') == 'Point'
+        and feature['properties'].get('tipo') != 'ConsumerAnchor'
+    ]
     summaries = transformer_consumer_summaries(graph)
     document = json.loads(Path(path).read_text(encoding='utf-8'))
+    existing_pacs = set()
     for feature in document['features']:
         props = feature.get('properties') or {}
+        for key in ('PAC', 'PAC_1', 'PAC_2', 'COD_ID'):
+            value = _clean_id(props.get(key))
+            if value:
+                existing_pacs.add(value)
         summary = summaries.get(_clean_id(props.get('PAC_2')))
         if summary and str(props.get('tipo') or '').upper().split('.')[-1] == 'UNTRMT':
             props['consumer_summary'] = summary
+    # Evita duplicar os transformadores/chaves que já têm geometria original,
+    # mas mantém todas as barras calculadas que o recorte GIS não contém.
+    for feature in graph_nodes:
+        props = feature['properties']
+        pac = _clean_id(props.get('COD_ID'))
+        if pac in existing_pacs:
+            continue
+        props['map_source'] = 'Nó topológico calculado'
+        document['features'].append(feature)
     document['features'].extend(anchors)
     Path(path).write_text(json.dumps(document, ensure_ascii=False, allow_nan=False), encoding='utf-8')
 

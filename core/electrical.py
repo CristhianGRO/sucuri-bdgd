@@ -60,7 +60,9 @@ class ElectricalCalculator:
 
             # -------- loads --------
 
-            if d.get("tipo_no") == "UCBT":
+            # UCBT é uma carga conectada a uma barra BT; a barra mantém seu
+            # tipo físico (PAC_LV/PAC_RAMLIG) para o desenho da topologia.
+            if d.get("ucbt_row"):
 
                 n_ucbt_nodes += 1
 

@@ -308,7 +308,12 @@ class LegacyTopology:
                     # enquanto a lista preserva a associação completa para o
                     # mapa e para agregações por transformador.
                     consumer = r.to_dict()
-                    node["tipo_no"] = "UCBT"
+                    # A UC é uma carga *ligada à barra*, não um novo tipo de
+                    # barra. Preservar PAC_LV/PAC_RAMLIG (ou outro tipo físico)
+                    # permite que o mapa continue desenhando o nó da rede BT.
+                    # A presença de ``ucbt_rows`` identifica a carga para os
+                    # cálculos e para a visualização dos consumidores.
+                    node["has_ucbt"] = True
                     node.setdefault("ucbt_rows", []).append(consumer)
                     node.setdefault("ucbt_row", consumer)
 
