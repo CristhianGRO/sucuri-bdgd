@@ -251,13 +251,53 @@ def transformer_consumer_summaries(graph):
     return summaries
 
 
+def _connected_coordinate(graph, node, coordinates, max_depth=80):
+    """Procura a barra georreferenciada mais próxima pela topologia BT."""
+    allowed = {'SSDBT', 'RAMLIG', 'MT_BT_Transformer_Connection'}
+    queue = [(node, 0)]
+    seen = {node}
+    while queue:
+        current, depth = queue.pop(0)
+        if current in coordinates:
+            return coordinates[current], current
+        if depth >= max_depth:
+            continue
+        for neighbor in graph.neighbors(current):
+            edge = graph.get_edge_data(current, neighbor) or {}
+            if edge.get('tipo') not in allowed or neighbor in seen:
+                continue
+            seen.add(neighbor)
+            queue.append((neighbor, depth + 1))
+    return None, None
+
+
+def _spread_coordinate(coordinate, node):
+    """Evita sobreposição ao distribuir âncoras sem coordenada própria."""
+    digest = hashlib.sha256(str(node).encode('utf-8')).digest()
+    angle = int.from_bytes(digest[:2], 'big') / 65535 * math.tau
+    radius_meters = 9 + digest[2] % 28
+    longitude, latitude = coordinate
+    latitude += math.sin(angle) * radius_meters / 111_320
+    longitude += math.cos(angle) * radius_meters / (111_320 * max(math.cos(math.radians(latitude)), .2))
+    return [longitude, latitude]
+
+
 def consumer_anchor_features(graph, coordinates, ctmt):
     """Cria pontos de visualização nas barras que concentram UCs sem geometria."""
     features = []
     for node, values in graph.nodes(data=True):
         rows = _consumer_rows(values)
-        if node not in coordinates or not rows:
+        if not rows:
             continue
+        coordinate = coordinates.get(node)
+        approximate = coordinate is None
+        anchor_node = node
+        if approximate:
+            coordinate, anchor_node = _connected_coordinate(graph, node, coordinates)
+        if coordinate is None:
+            continue
+        if approximate:
+            coordinate = _spread_coordinate(coordinate, node)
         features.append({
             'type': 'Feature',
             'properties': {
@@ -265,9 +305,11 @@ def consumer_anchor_features(graph, coordinates, ctmt):
                 'COD_ID': 'CONSUMERS_' + str(node),
                 'PAC': str(node),
                 'tipo': 'ConsumerAnchor',
+                'anchor_pac': str(anchor_node),
+                'position_estimated': approximate,
                 **consumer_payload(rows),
             },
-            'geometry': {'type': 'Point', 'coordinates': coordinates[node]},
+            'geometry': {'type': 'Point', 'coordinates': coordinate},
         })
     return features
 
@@ -306,13 +348,14 @@ def graph_geojson(graph, ctmt, crs):
     for u,v,d in graph.edges(data=True):
         if u in coordinates and v in coordinates:
             features.append({'type':'Feature','properties':{**props('',d),'CTMT':ctmt,'COD_ID':str(d.get('id',str(u)+'_'+str(v))),'geometria':'Ligação reta entre nós; não é o traçado original'},'geometry':{'type':'LineString','coordinates':[coordinates[u],coordinates[v]]}})
+    features.extend(consumer_anchor_features(graph, coordinates, ctmt))
     return {'type':'FeatureCollection','features':features}, missing
 
 
 def append_consumer_visuals(path, graph, ctmt, crs):
     """Acrescenta âncoras de UCs e resumos aos traços originais BDGD."""
     generated, _ = graph_geojson(graph, ctmt, crs)
-    anchors = [feature for feature in generated['features'] if feature['properties'].get('tipo_no') == 'UCBT' and feature['properties'].get('consumer_count')]
+    anchors = [feature for feature in generated['features'] if feature['properties'].get('tipo') == 'ConsumerAnchor']
     summaries = transformer_consumer_summaries(graph)
     document = json.loads(Path(path).read_text(encoding='utf-8'))
     for feature in document['features']:
@@ -320,13 +363,6 @@ def append_consumer_visuals(path, graph, ctmt, crs):
         summary = summaries.get(_clean_id(props.get('PAC_2')))
         if summary and str(props.get('tipo') or '').upper().split('.')[-1] == 'UNTRMT':
             props['consumer_summary'] = summary
-    # Os nós UCBT gerados são âncoras na barra: as coordenadas vêm do grafo,
-    # não da unidade consumidora, que pode não ter geometria própria.
-    for feature in anchors:
-        pac = feature['properties']['COD_ID']
-        feature['properties']['PAC'] = pac
-        feature['properties']['COD_ID'] = 'CONSUMERS_' + pac
-        feature['properties']['tipo'] = 'ConsumerAnchor'
     document['features'].extend(anchors)
     Path(path).write_text(json.dumps(document, ensure_ascii=False, allow_nan=False), encoding='utf-8')
 

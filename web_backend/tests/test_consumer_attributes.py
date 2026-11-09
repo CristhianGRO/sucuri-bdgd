@@ -60,3 +60,16 @@ class ConsumerAttributes(TestCase):
         anchors=[feature for feature in features if feature['properties'].get('tipo')=='ConsumerAnchor']
         self.assertEqual(len(anchors),1)
         self.assertEqual(anchors[0]['properties']['PAC'],'PAC_BT')
+
+    def test_consumer_without_coordinates_is_anchored_near_connected_bus(self):
+        graph=nx.Graph()
+        graph.add_node('BAR',tipo_no='PAC_LV',x=-51,y=-30)
+        graph.add_node('PAC_BT',tipo_no='UCBT',ucbt_rows=[{'COD_ID':'UC-1','CLAS_SUB':'RE1'}])
+        graph.add_edge('BAR','PAC_BT',tipo='SSDBT')
+        geo,missing=graph_geojson(graph,'F1','EPSG:4326')
+        anchors=[feature for feature in geo['features'] if feature['properties'].get('tipo')=='ConsumerAnchor']
+        self.assertEqual(missing,1)
+        self.assertEqual(len(anchors),1)
+        self.assertTrue(anchors[0]['properties']['position_estimated'])
+        self.assertEqual(anchors[0]['properties']['anchor_pac'],'BAR')
+        self.assertNotEqual(anchors[0]['geometry']['coordinates'],[-51,-30])
