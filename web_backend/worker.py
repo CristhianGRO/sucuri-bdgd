@@ -15,6 +15,13 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 ARCGIS = 'https://www.arcgis.com/sharing/rest'
 OWNER = 'aneel_aneel'
+WANTED_LAYERS = {'SEGCON','CRVCRG','UNTRAT','CTMT','SSDMT','SSDBT','UNSEMT','UNSEBT','UNTRMT','RAMLIG','UCBT','PONNOT','UCMT','UCAT'}
+
+
+def standard_layer_name(layer):
+    """Normaliza nomes BDGD, inclusive as tabelas ``*_tab`` da CPFL."""
+    name = layer.upper().split('.')[-1]
+    return re.sub(r'_TAB$', '', name)
 
 
 def remote_json(path, params=None):
@@ -62,10 +69,57 @@ def extract_archive(archive, target, max_bytes):
         z.extractall(target)
 
 
-def import_aneel(item_id, data_root, cache_root, log, max_bytes):
+def write_gdb_layer_csv(gdb, layer, standard, destination):
+    """Converte uma camada ou tabela GDB para o CSV usado pelo motor."""
     import fiona
     from fiona.transform import transform
     from shapely.geometry import shape
+    with fiona.open(gdb, layer=layer) as src, Path(destination).open('w', encoding='utf-8', newline='') as target:
+        fields = list(src.schema['properties'])
+        fields += [key for key in ('X', 'Y') if key not in fields]
+        writer = csv.DictWriter(target, fieldnames=fields)
+        writer.writeheader()
+        for feature in src:
+            row = dict(feature['properties'])
+            if feature['geometry']:
+                if not src.crs:
+                    raise ValueError('Camada sem CRS: ' + layer)
+                centroid = shape(feature['geometry']).centroid
+                xs, ys = transform(src.crs, 'EPSG:4326', [centroid.x], [centroid.y])
+                row.update(X=xs[0], Y=ys[0])
+            writer.writerow(row)
+
+
+def migrate_consumer_table(dest, log):
+    """Acrescenta UCBT de bases já importadas que usavam o nome UCBT_tab."""
+    metadata_path = Path(dest) / 'source.json'
+    if not metadata_path.exists():
+        return False
+    source = json.loads(metadata_path.read_text(encoding='utf-8'))
+    if 'UCBT' in source.get('layers', {}):
+        return False
+    gdb = Path(source.get('gdb', ''))
+    if not gdb.is_dir():
+        return False
+    import fiona
+    for layer in fiona.listlayers(gdb):
+        if standard_layer_name(layer) != 'UCBT':
+            continue
+        log('Atualizando UCBT a partir da tabela ' + layer)
+        temporary = Path(dest) / '.UCBT.csv.part'
+        try:
+            write_gdb_layer_csv(gdb, layer, 'UCBT', temporary)
+            os.replace(temporary, Path(dest) / 'UCBT.csv')
+        finally:
+            temporary.unlink(missing_ok=True)
+        source['layers']['UCBT'] = layer
+        metadata_path.write_text(json.dumps(source, ensure_ascii=False), encoding='utf-8')
+        log('Tabela UCBT adicionada à base local.')
+        return True
+    return False
+
+
+def import_aneel(item_id, data_root, cache_root, log, max_bytes):
     if not re.fullmatch(r'[a-f0-9]{32}', item_id):
         raise ValueError('Identificador ArcGIS inválido')
     item = remote_json('/content/items/' + item_id)
@@ -75,6 +129,8 @@ def import_aneel(item_id, data_root, cache_root, log, max_bytes):
         raise ValueError('Download excede o limite configurado')
     dest = safe_child(data_root, 'ANEEL_' + item_id)
     if (dest / 'source.json').exists():
+        if migrate_consumer_table(dest, log):
+            log('Base existente atualizada com UCBT; reprocese o alimentador.')
         log('Base já importada; reutilizando cópia local.')
         return {'dataset': dest.name}
     cache = Path(cache_root) / item_id
@@ -111,30 +167,17 @@ def import_aneel(item_id, data_root, cache_root, log, max_bytes):
     gdb = gdbs[0]
     stage = cache / 'csv'
     stage.mkdir(exist_ok=True)
-    wanted = {'SEGCON','CRVCRG','UNTRAT','CTMT','SSDMT','SSDBT','UNSEMT','UNSEBT','UNTRMT','RAMLIG','UCBT','PONNOT','UCMT','UCAT'}
+    import fiona
     found = {}
     for layer in fiona.listlayers(gdb):
-        standard = layer.upper().split('.')[-1]
-        if standard not in wanted:
+        standard = standard_layer_name(layer)
+        if standard not in WANTED_LAYERS:
             continue
         if standard in found:
             raise ValueError('Camada duplicada: ' + standard)
         found[standard] = layer
         log('Convertendo ' + standard)
-        with fiona.open(gdb, layer=layer) as src, (stage / (standard + '.csv')).open('w', encoding='utf-8', newline='') as target:
-            fields = list(src.schema['properties'])
-            fields += [k for k in ('X','Y') if k not in fields]
-            writer = csv.DictWriter(target, fieldnames=fields)
-            writer.writeheader()
-            for f in src:
-                row = dict(f['properties'])
-                if f['geometry']:
-                    if not src.crs:
-                        raise ValueError('Camada sem CRS: ' + layer)
-                    centroid = shape(f['geometry']).centroid
-                    xs, ys = transform(src.crs, 'EPSG:4326', [centroid.x], [centroid.y])
-                    row.update(X=xs[0], Y=ys[0])
-                writer.writerow(row)
+        write_gdb_layer_csv(gdb, layer, standard, stage / (standard + '.csv'))
     if not {'CTMT','SSDMT','PONNOT'}.issubset(found):
         raise ValueError('GDB não contém as camadas mínimas CTMT, SSDMT e PONNOT com nomes reconhecidos')
     (stage / 'source.json').write_text(json.dumps({'title':item['title'],'item_id':item_id,'sha256':digest.hexdigest(),'gdb':str(gdb),'layers':found,'crs':'EPSG:4326'},ensure_ascii=False),encoding='utf-8')
@@ -313,7 +356,10 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
             if metadata.exists():
                 from web.tools.export_geojson import export
                 source = json.loads(metadata.read_text(encoding='utf-8'))
-                layers = [v for k,v in source['layers'].items() if k in ('SSDMT','SSDBT','UNTRMT','UNSEMT','UNSEBT','RAMLIG','UCBT','UCMT')]
+                # UCBT/UCMT podem ser tabelas sem geometria (por exemplo,
+                # UCBT_tab da CPFL). Elas entram no grafo, não no exportador
+                # geográfico, que exige CRS por camada.
+                layers = [v for k,v in source['layers'].items() if k in ('SSDMT','SSDBT','UNTRMT','UNSEMT','UNSEBT','RAMLIG')]
                 export(source['gdb'], job / 'network.geojson', layers, {ctmt})
                 append_consumer_visuals(job / 'network.geojson', result['graph'], ctmt, args.get('crs','EPSG:4326'))
                 geometry_mode = 'Geometrias originais BDGD (associação direta por CTMT)'
