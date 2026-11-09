@@ -302,8 +302,15 @@ class LegacyTopology:
 
                 if pac in node_map:
                     n = node_map[pac]
-                    G.nodes[n]["tipo_no"] = "UCBT"
-                    G.nodes[n]["ucbt_row"] = r.to_dict()
+                    node = G.nodes[n]
+                    # Uma barra pode atender várias unidades consumidoras. O
+                    # campo singular é mantido para compatibilidade elétrica,
+                    # enquanto a lista preserva a associação completa para o
+                    # mapa e para agregações por transformador.
+                    consumer = r.to_dict()
+                    node["tipo_no"] = "UCBT"
+                    node.setdefault("ucbt_rows", []).append(consumer)
+                    node.setdefault("ucbt_row", consumer)
 
         return G
 

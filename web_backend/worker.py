@@ -150,20 +150,106 @@ def import_aneel(item_id, data_root, cache_root, log, max_bytes):
     return {'dataset': dest.name}
 
 
+CONSUMER_FIELDS = ('CLAS_SUB', 'FAS_CON', 'TIP_CC', 'GRU_TEN', 'TEN_FORN', 'GRU_TAR')
+
+
+def _clean_id(value):
+    return str(value or '').strip().upper()
+
+
+def _consumer_rows(values):
+    rows = values.get('ucbt_rows')
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    row = values.get('ucbt_row')
+    return [row] if isinstance(row, dict) else []
+
+
+def consumer_payload(rows, limit=200):
+    """Produz dados de visualização, sem expor o registro completo da UC."""
+    classes = {}
+    consumers = []
+    for row in rows:
+        consumer_class = str(row.get('CLAS_SUB') or 'Não informado').strip() or 'Não informado'
+        classes[consumer_class] = classes.get(consumer_class, 0) + 1
+        if len(consumers) < limit:
+            consumer_id = str(row.get('COD_ID') or row.get('NUM_UC') or row.get('CEG') or '').strip()
+            consumers.append({'id': consumer_id or 'Sem identificador', 'class': consumer_class})
+    return {
+        'consumer_count': len(rows),
+        'consumer_classes': classes,
+        'consumers': consumers,
+        'consumer_list_truncated': len(rows) > len(consumers),
+    }
+
+
+def transformer_consumer_summaries(graph):
+    """Agrega as UCs alcançáveis pela rede BT de cada transformador."""
+    summaries = {}
+    low_voltage_edges = {'SSDBT', 'RAMLIG'}
+    for left, right, edge in graph.edges(data=True):
+        if edge.get('tipo') != 'MT_BT_Transformer_Connection':
+            continue
+        secondary = right if graph.nodes[right].get('tipo_no') == 'Transformer_Sec' else left
+        queue = [secondary]
+        seen = {secondary}
+        rows = []
+        while queue:
+            node = queue.pop()
+            rows.extend(_consumer_rows(graph.nodes[node]))
+            for neighbor in graph.neighbors(node):
+                branch = graph.get_edge_data(node, neighbor) or {}
+                if branch.get('tipo') not in low_voltage_edges or neighbor in seen:
+                    continue
+                seen.add(neighbor)
+                queue.append(neighbor)
+        if rows:
+            summaries[_clean_id(secondary)] = consumer_payload(rows)
+    return summaries
+
+
+def consumer_anchor_features(graph, coordinates, ctmt):
+    """Cria pontos de visualização nas barras que concentram UCs sem geometria."""
+    features = []
+    for node, values in graph.nodes(data=True):
+        rows = _consumer_rows(values)
+        if node not in coordinates or not rows:
+            continue
+        features.append({
+            'type': 'Feature',
+            'properties': {
+                'CTMT': ctmt,
+                'COD_ID': 'CONSUMERS_' + str(node),
+                'PAC': str(node),
+                'tipo': 'ConsumerAnchor',
+                **consumer_payload(rows),
+            },
+            'geometry': {'type': 'Point', 'coordinates': coordinates[node]},
+        })
+    return features
+
+
 def graph_geojson(graph, ctmt, crs):
     from pyproj import Transformer
     transformer = Transformer.from_crs(crs, 'EPSG:4326', always_xy=True)
     coordinates = {}
     features = []
     missing = 0
-    def props(values):
-        result = {k: str(v) for k,v in values.items() if not k.startswith('_') and k not in ('ucbt_row','trafo_row')}
+    summaries = transformer_consumer_summaries(graph)
+    def props(node, values):
+        result = {k: str(v) for k,v in values.items() if not k.startswith('_') and k not in ('ucbt_row','ucbt_rows','trafo_row')}
         consumer = values.get('ucbt_row')
         if isinstance(consumer, dict):
-            for key in ('CLAS_SUB','FAS_CON','TIP_CC','GRU_TEN','TEN_FORN','GRU_TAR'):
+            for key in CONSUMER_FIELDS:
                 value = consumer.get(key)
                 if value is not None and str(value).strip().lower() not in ('nan','none',''):
                     result[key] = str(value)
+        rows = _consumer_rows(values)
+        if rows:
+            result.update(consumer_payload(rows))
+        summary = summaries.get(_clean_id(node))
+        if summary:
+            result['consumer_summary'] = summary
         return result
     for node, d in graph.nodes(data=True):
         try:
@@ -171,13 +257,35 @@ def graph_geojson(graph, ctmt, crs):
             if not math.isfinite(x+y) or abs(x)>180 or abs(y)>90:
                 raise ValueError('coordinate')
             coordinates[node] = [x,y]
-            features.append({'type':'Feature','properties':{**props(d),'CTMT':ctmt,'COD_ID':str(node)},'geometry':{'type':'Point','coordinates':[x,y]}})
+            features.append({'type':'Feature','properties':{**props(node,d),'CTMT':ctmt,'COD_ID':str(node)},'geometry':{'type':'Point','coordinates':[x,y]}})
         except (KeyError,ValueError,TypeError):
             missing += 1
     for u,v,d in graph.edges(data=True):
         if u in coordinates and v in coordinates:
-            features.append({'type':'Feature','properties':{**props(d),'CTMT':ctmt,'COD_ID':str(d.get('id',str(u)+'_'+str(v))),'geometria':'Ligação reta entre nós; não é o traçado original'},'geometry':{'type':'LineString','coordinates':[coordinates[u],coordinates[v]]}})
+            features.append({'type':'Feature','properties':{**props('',d),'CTMT':ctmt,'COD_ID':str(d.get('id',str(u)+'_'+str(v))),'geometria':'Ligação reta entre nós; não é o traçado original'},'geometry':{'type':'LineString','coordinates':[coordinates[u],coordinates[v]]}})
     return {'type':'FeatureCollection','features':features}, missing
+
+
+def append_consumer_visuals(path, graph, ctmt, crs):
+    """Acrescenta âncoras de UCs e resumos aos traços originais BDGD."""
+    generated, _ = graph_geojson(graph, ctmt, crs)
+    anchors = [feature for feature in generated['features'] if feature['properties'].get('tipo_no') == 'UCBT' and feature['properties'].get('consumer_count')]
+    summaries = transformer_consumer_summaries(graph)
+    document = json.loads(Path(path).read_text(encoding='utf-8'))
+    for feature in document['features']:
+        props = feature.get('properties') or {}
+        summary = summaries.get(_clean_id(props.get('PAC_2')))
+        if summary and str(props.get('tipo') or '').upper().split('.')[-1] == 'UNTRMT':
+            props['consumer_summary'] = summary
+    # Os nós UCBT gerados são âncoras na barra: as coordenadas vêm do grafo,
+    # não da unidade consumidora, que pode não ter geometria própria.
+    for feature in anchors:
+        pac = feature['properties']['COD_ID']
+        feature['properties']['PAC'] = pac
+        feature['properties']['COD_ID'] = 'CONSUMERS_' + pac
+        feature['properties']['tipo'] = 'ConsumerAnchor'
+    document['features'].extend(anchors)
+    Path(path).write_text(json.dumps(document, ensure_ascii=False, allow_nan=False), encoding='utf-8')
 
 
 def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_bytes):
@@ -207,6 +315,7 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
                 source = json.loads(metadata.read_text(encoding='utf-8'))
                 layers = [v for k,v in source['layers'].items() if k in ('SSDMT','SSDBT','UNTRMT','UNSEMT','UNSEBT','RAMLIG','UCBT','UCMT')]
                 export(source['gdb'], job / 'network.geojson', layers, {ctmt})
+                append_consumer_visuals(job / 'network.geojson', result['graph'], ctmt, args.get('crs','EPSG:4326'))
                 geometry_mode = 'Geometrias originais BDGD (associação direta por CTMT)'
             else:
                 if not geo['features']:

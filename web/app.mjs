@@ -1,5 +1,5 @@
 import {downloadResult} from './api.mjs';
-import {categories,category,symbolSVG} from './symbology.mjs';
+import {categories,category,consumerClass,symbolSVG} from './symbology.mjs';
 import {validate,toKML,demoData} from './model.mjs';
 import {NetworkCollection,mapFeederOf as feederOf,selectMapFeeder as selected,visibleSelection} from './networks.mjs';
 const $=id=>document.getElementById(id);
@@ -10,7 +10,7 @@ const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attrib
 $('basemap').onchange=()=>{const mode=$('basemap').value;$('map').classList.toggle('light-map',mode==='light');if(mode==='none')map.removeLayer(tiles);else if(!map.hasLayer(tiles))tiles.addTo(map);};
 window.addEventListener('sucuri-network',event=>{try{load(event.detail.data,event.detail.label,{dataset:event.detail.dataset,add:event.detail.add,download:event.detail.download});}catch(error){status(error.message);}});
 L.control.scale({imperial:false}).addTo(map);
-let data, layer;
+let data, layer, showConsumers=false;
 const networks=new NetworkCollection();
 let demoActive=false;
 map.on('zoomend',()=>{if(layer)layer.setStyle(style);});
@@ -18,12 +18,32 @@ function attributes(f){
   const container=document.createElement('div'),heading=document.createElement('strong');
   heading.textContent=categories[category(f)].label;container.append(heading);
   const dl=document.createElement('dl');
-  for(const k of [...new Set(['COD_ID','CTMT','tipo_no','tipo','CLAS_SUB','FAS_CON',...Object.keys(f.properties)])].filter(k=>k in f.properties)){const v=f.properties[k],dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=k;dd.textContent=typeof v==='object'?JSON.stringify(v):String(v);dl.append(dt,dd);}
-  container.append(dl);return container;
+  const visual=['consumer_summary','consumer_count','consumer_classes','consumers','consumer_list_truncated'];
+  for(const k of [...new Set(['COD_ID','PAC','CTMT','tipo_no','tipo','CLAS_SUB','FAS_CON',...Object.keys(f.properties)])].filter(k=>k in f.properties&&!visual.includes(k))){const v=f.properties[k],dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=k;dd.textContent=typeof v==='object'?JSON.stringify(v):String(v);dl.append(dt,dd);}
+  container.append(dl);
+  if(f.properties.consumer_summary)container.append(consumerPanel(f.properties.consumer_summary,'Consumidores atendidos pelo transformador'));
+  if(f.properties.consumer_count)container.append(consumerPanel(f.properties,'Consumidores ligados nesta barra',true));
+  return container;
+}
+function consumerColor(name){return categories[consumerClass({CLAS_SUB:name})].color;}
+function consumerPanel(payload,title,showList=false){
+  const box=document.createElement('section');box.className='consumer-panel';
+  const heading=document.createElement('strong');heading.textContent=title;box.append(heading);
+  const classes=Object.entries(payload.consumer_classes??{}).filter(([,count])=>Number(count)>0);
+  const total=Number(payload.consumer_count??classes.reduce((sum,[,count])=>sum+Number(count),0));
+  if(classes.length){let progress=0;const slices=classes.map(([name,count])=>{const start=progress;progress+=Number(count)/total*100;return `${consumerColor(name)} ${start}% ${progress}%`;});const row=document.createElement('div');row.className='consumer-breakdown';const pie=document.createElement('span');pie.className='consumer-pie';pie.style.background=`conic-gradient(${slices.join(',')})`;pie.setAttribute('aria-label',`${total} consumidores`);const legend=document.createElement('ul');for(const [name,count] of classes){const item=document.createElement('li'),swatch=document.createElement('i');swatch.style.backgroundColor=consumerColor(name);item.append(swatch,document.createTextNode(`${name}: ${count}`));legend.append(item);}row.append(pie,legend);box.append(row);}
+  else {const empty=document.createElement('p');empty.textContent='Nenhum consumidor classificado.';box.append(empty);}
+  if(showList){const list=document.createElement('ul');list.className='consumer-tree';for(const consumer of (payload.consumers??[]).slice(0,30)){const item=document.createElement('li');item.textContent=`${consumer.id} · ${consumer.class}`;list.append(item);}if(payload.consumer_list_truncated){const item=document.createElement('li');item.textContent='… demais consumidores disponíveis no processamento';list.append(item);}box.append(list);}
+  return box;
 }
 function style(f){const active=!$('feeder').value || feederOf(f)===$('feeder').value;return {color:categories[category(f)].color,weight:f.geometry.type==='Point'?1:(active?2:1),opacity:active?1:.16,fillOpacity:active?.85:.16,radius:map.getZoom()>=16?5:3.5};}
+function consumerAnchorIcon(f){
+  const consumers=(f.properties.consumers??[]).slice(0,24),count=Number(f.properties.consumer_count??consumers.length),dots=consumers.map((consumer,index)=>{const angle=Math.round(index/Math.max(consumers.length,1)*360),radius=24+(index%3)*7;return `<i class="consumer-dot" style="--consumer-angle:${angle}deg;--consumer-radius:${radius}px;background:${consumerColor(consumer.class)}"></i>`;}).join('');
+  return L.divIcon({className:'consumer-anchor-marker',html:`<div class="consumer-anchor${showConsumers?' is-pinned':''}" aria-label="${count} consumidores conectados"><span class="consumer-hand">${dots}</span><span class="consumer-badge">${count}</span></div>`,iconSize:[116,116],iconAnchor:[58,58]});
+}
 function pointLayer(f,ll){
   const key=category(f);
+  if(key==='consumers')return L.marker(ll,{icon:consumerAnchorIcon(f),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:`${f.properties.consumer_count} consumidores conectados`,riseOnHover:true,riseOffset:1100});
   if(['res','com','ind','load','transformer','substation'].includes(key)){
     return L.marker(ll,{icon:L.divIcon({className:`network-symbol symbol-${key}`,html:symbolSVG(key),iconSize:key==='substation'?[60,48]:[40,40],iconAnchor:key==='substation'?[30,24]:[20,20]}),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:categories[key].label,riseOnHover:true,riseOffset:1000,zIndexOffset:key==='substation'?2000:key==='transformer'?500:300});
   }
@@ -41,6 +61,8 @@ legend.onAdd=()=>{
   }
   L.DomEvent.disableClickPropagation(box);L.DomEvent.disableScrollPropagation(box);return box;
 };legend.addTo(map);
+const consumerControl=L.control({position:'topleft'});
+consumerControl.onAdd=()=>{const box=L.DomUtil.create('label','consumer-control'),check=document.createElement('input'),text=document.createElement('span');check.type='checkbox';check.checked=showConsumers;text.textContent=' Mostrar consumidores';check.onchange=()=>{showConsumers=check.checked;draw();};box.append(check,text);L.DomEvent.disableClickPropagation(box);L.DomEvent.disableScrollPropagation(box);return box;};consumerControl.addTo(map);
 function draw(fit=false){
   if(layer) map.removeLayer(layer);
   const id=$('feeder').value;
