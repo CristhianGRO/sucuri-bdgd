@@ -324,14 +324,18 @@ class LegacyTopology:
     # ---------------------------------------------------------
 
     @staticmethod
-    def attach_transformer_parameters(G, ctmt_row):
+    def attach_transformer_parameters(G, ctmt_row, voltage_primary_kv=None):
 
         import numpy as np
 
         if G is None:
             raise RuntimeError("attach_transformer_parameters recebeu G=None")
 
-        ten_ope = float(ctmt_row["TEN_OPE"])
+        # CTMT.TEN_OPE é setpoint em pu, não tensão nominal. A tensão de
+        # primário é recebida já resolvida pela TTEN no controlador.
+        Vprim = float(voltage_primary_kv) if voltage_primary_kv else None
+        if not Vprim or Vprim <= 0:
+            raise ValueError("Tensão nominal primária do transformador ausente")
 
         for u, v, d in G.edges(data=True):
 
@@ -344,7 +348,6 @@ class LegacyTopology:
 
             Snom = float(tr.get("POT_NOM", 45))
             Vsec = float(tr.get("TEN_LIN_SE", 0.22))
-            Vprim = ten_ope
 
             perdas_tot = float(tr.get("PER_TOT", 0))
             perdas_fer = float(tr.get("PER_FER", 0))
@@ -361,12 +364,24 @@ class LegacyTopology:
             # fallback típico BDGD quando Z% não disponível
             Xpu = 0.04
 
+            try:
+                tap = float(tr.get("TAP", 1.0))
+            except (TypeError, ValueError):
+                tap = 1.0
+            # TAP é tratado como relação no lado primário: 0,95 eleva a
+            # tensão secundária e 1,05 a reduz, conforme a prática usada no
+            # fluxo legado.
+            if not 0.8 <= tap <= 1.2:
+                tap = 1.0
+
             d["trafo_params"] = {
                 "Snom": Snom,
                 "Rpu": Rpu,
                 "Xpu": Xpu,
                 "Vprim": Vprim,
-                "Vsec": Vsec
+                "Vsec": Vsec,
+                "tap_ratio": tap,
+                "tap_side": "primary",
             }
 
         return G
@@ -490,6 +505,11 @@ class LegacyTopology:
         distancias = (0.6, 0.6, 1.2)
 
         # --------------------------------------------------
+        # A identificação do condutor se repete em muitos trechos. Ajustar o
+        # GMR pelo método de Carson é a etapa cara; calculá-lo uma vez por
+        # TIP_CND preserva o resultado e evita milhares de otimizações iguais.
+        zabcs_per_km = {}
+
         # aplicar nas arestas
         # --------------------------------------------------
 
@@ -511,7 +531,9 @@ class LegacyTopology:
             R1 = float(seg[cR1])
             X1 = float(seg[cX1])
 
-            Zabc_km = carson_modificada_Zabc(R1, X1, distancias)
+            if tip not in zabcs_per_km:
+                zabcs_per_km[tip] = carson_modificada_Zabc(R1, X1, distancias)
+            Zabc_km = zabcs_per_km[tip]
 
             L_km = float(d.get("comprimento",1.0)) / 1000.0
             Zabc = Zabc_km * L_km

@@ -3,9 +3,11 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 from concurrent.futures import Future
+import networkx as nx
+import numpy as np
 from web_backend.server import Service
 from web_backend.result_cache import fingerprint,write_json,publish_cached,find_cached
-from web_backend.worker import run_job
+from web_backend.worker import run_job, save_electrical_graph, load_electrical_graph
 
 class PersistentCacheTests(TestCase):
     def test_completed_worker_reused_after_restart_and_invalidated(self):
@@ -45,3 +47,29 @@ class PersistentCacheTests(TestCase):
             write_json(root/job_id/'state.json',{'status':'failed','cache_key':key})
             write_json(root.parent/'cache'/'key.json',{'id':job_id,'artifacts':{}})
             self.assertIsNone(find_cached(root,key))
+
+    def test_powerflow_uses_its_own_persistent_cache_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); dataset = root/'bases'/'TEST'; dataset.mkdir(parents=True)
+            (dataset/'CTMT.csv').write_text('COD_ID,NOME\nF1,Feeder\n')
+            jobs = root/'runtime'/'jobs'; job_id = 'c'*32
+            args = {'dataset':'TEST','feeder':'F1','crs':'EPSG:4326','run_powerflow':True}
+            args['_cache_key'] = fingerprint(dataset, 'F1', 'EPSG:4326', 'powerflow')
+            def generate(kind, arguments, data, job_root, cache, job, max_bytes):
+                target = Path(job_root)/job
+                for name in ('network.geojson','powerflow.zip','report.json'):
+                    (target/name).write_text('test')
+                return {'dataset':'TEST','feeder':'F1'}
+            with patch('web_backend.worker._run_job_impl', side_effect=generate):
+                run_job('process', args, root/'bases', jobs, root/'runtime'/'downloads', job_id, 100)
+            self.assertIsNotNone(find_cached(jobs, args['_cache_key']))
+
+    def test_electrical_graph_cache_keeps_abc_matrices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            graph = nx.Graph()
+            graph.add_edge('A', 'B', Zabc=np.eye(3, dtype=complex) * (.2 + .1j))
+            path = Path(tmp) / 'electrical_graph.pickle'
+            save_electrical_graph(path, graph)
+            cached = load_electrical_graph(path)
+            self.assertEqual(cached.number_of_edges(), 1)
+            self.assertAlmostEqual(cached['A']['B']['Zabc'][0, 0].imag, .1)

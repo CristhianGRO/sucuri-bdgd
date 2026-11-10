@@ -9,6 +9,32 @@ from core.legacy_logic import LegacyTopology
 from core.electrical import ElectricalCalculator
 from core.exporter import PowerFlowExporter
 
+# Domínio TTEN do Dicionário de Dados ANEEL (valores em V). Algumas GDBs
+# publicadas não carregam as tabelas de domínio; por isso o fluxo não pode
+# depender da presença física da camada TTEN no arquivo da distribuidora.
+TTEN_DDA_VOLTS = {
+    '0': 0, '1': 110, '2': 115, '3': 120, '4': 121, '5': 125, '6': 127,
+    '7': 208, '8': 216, '9': 216.5, '10': 220, '11': 230, '12': 231,
+    '13': 240, '14': 254, '15': 380, '16': 400, '17': 440, '18': 480,
+    '19': 500, '20': 600, '21': 750, '22': 1000, '23': 2200, '24': 3200,
+    '25': 3600, '26': 3785, '27': 3800, '28': 3848, '29': 3985,
+    '30': 4160, '31': 4200, '32': 4207, '33': 4368, '34': 4560,
+    '35': 5000, '36': 6000, '37': 6600, '38': 6930, '39': 7960,
+    '40': 8670, '41': 11400, '42': 11900, '43': 12000, '44': 12600,
+    '45': 12700, '46': 13200, '47': 13337, '48': 13530, '49': 13800,
+    '50': 13860, '51': 14140, '52': 14190, '53': 14400, '54': 14835,
+    '55': 15000, '56': 15200, '57': 19053, '58': 19919, '59': 21000,
+    '60': 21500, '61': 22000, '62': 23000, '63': 23100, '64': 23827,
+    '65': 24000, '66': 24200, '67': 25000, '68': 25800, '69': 27000,
+    '70': 30000, '71': 33000, '72': 34500, '73': 36000, '74': 38000,
+    '75': 40000, '76': 44000, '77': 45000, '78': 45400, '79': 48000,
+    '80': 60000, '81': 66000, '82': 69000, '83': 72500, '84': 88000,
+    '85': 88200, '86': 92000, '87': 100000, '88': 120000, '89': 121000,
+    '90': 123000, '91': 131600, '92': 131630, '93': 131635, '94': 138000,
+    '95': 145000, '96': 230000, '97': 345000, '98': 500000, '99': 750000,
+    '100': 1000000, '101': 245000, '102': 550000,
+}
+
 
 class Controller:
 
@@ -106,6 +132,38 @@ class Controller:
         if pd.isna(pac) or not str(pac).strip():
             raise ValueError(f"PAC_INI ausente para {ctmt_id}")
         return str(pac).strip()
+
+    @staticmethod
+    def _nominal_voltage_kv(ctmt_row, df_tten):
+        """Resolve CTMT.TEN_NOM (código TTEN) para a base LL em kV.
+
+        Na BDGD, ``TEN_OPE`` é um valor em pu e não pode ser usado como base
+        de impedância. Esta separação é essencial para o fluxo trifásico.
+        """
+        code = str(ctmt_row.get("TEN_NOM", "")).strip()
+        try:
+            code = str(int(float(code)))
+        except (TypeError, ValueError):
+            pass
+        voltage_v = None
+        if df_tten is not None and not df_tten.empty:
+            id_column = next((c for c in df_tten.columns if c.upper() == "COD_ID"), None)
+            voltage_column = next((c for c in df_tten.columns if c.upper() == "TEN"), None)
+            if id_column and voltage_column:
+                matched = df_tten[df_tten[id_column].astype(str).str.strip() == code]
+                if len(matched) == 1:
+                    try:
+                        voltage_v = float(str(matched.iloc[0][voltage_column]).replace(',', '.'))
+                    except (TypeError, ValueError):
+                        voltage_v = None
+        if voltage_v is None:
+            voltage_v = TTEN_DDA_VOLTS.get(code)
+        if voltage_v is None:
+            raise ValueError(f"TTEN não contém uma tensão nominal para o código {code!r}")
+        voltage_kv = voltage_v / 1000.0
+        if not .1 <= voltage_kv <= 1000:
+            raise ValueError(f"Tensão TTEN fora da faixa física: {voltage_v!r} V")
+        return voltage_kv
 
     def _prune_to_substation_island(self, G):
 
@@ -281,9 +339,17 @@ class Controller:
                 # MV TRANSFORMERS
                 # -----------------------------------------
                 ctmt_row = data["CTMT"].iloc[0]
+                voltage_base_kv = self._nominal_voltage_kv(ctmt_row, data.get("TTEN"))
+                voltage_setpoint_pu = float(str(ctmt_row.get("TEN_OPE", 1.0)).replace(',', '.'))
+                if not .8 <= voltage_setpoint_pu <= 1.2:
+                    raise ValueError(f"CTMT.TEN_OPE fora da faixa esperada em pu: {voltage_setpoint_pu}")
+                G.nodes[pac_ini]["voltage_base_kv"] = voltage_base_kv
+                G.nodes[pac_ini]["voltage_setpoint_pu"] = voltage_setpoint_pu
+                self.log(f"Base do fluxo: {voltage_base_kv:.3f} kV; setpoint da subestação: {voltage_setpoint_pu:.4f} pu")
                 G = LegacyTopology.attach_transformer_parameters(
                     G,
-                    data["CTMT"].iloc[0]
+                    ctmt_row,
+                    voltage_base_kv,
                 )
 
                 self._check_islands(G)

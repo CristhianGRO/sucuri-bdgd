@@ -8,4 +8,4 @@ Mantenha o aplicativo aberto durante os downloads e processamentos. Se o navegad
 
 Esta versão Windows x64 é portátil e ainda não possui assinatura digital. Não requer instalação de Python. Bases e resultados ficam na pasta escolhida, fora do aplicativo. O código expira em 10 minutos e só pode ser usado uma vez; use **Novo código** para conectar outra aba.
 
-O aplicativo gera arquivos de entrada para fluxo de potência; não executa uma simulação elétrica. Consulte o relatório de cada rede antes de usar os resultados.
+O aplicativo executa fluxo de potência trifásico radial por varredura direta/inversa e exporta o relatório junto da rede. A análise radializa enlaces de malha e informa quantos foram isolados; consulte esse dado e o relatório antes de usar os resultados em estudos de engenharia.

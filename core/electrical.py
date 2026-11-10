@@ -66,62 +66,34 @@ class ElectricalCalculator:
 
                 n_ucbt_nodes += 1
 
-                row = d.get("ucbt_row")
-                if not row:
+                rows = d.get("ucbt_rows") or [d.get("ucbt_row")]
+                rows = [row for row in rows if isinstance(row, dict)]
+                if not rows:
                     continue
-
-                tip = row.get("TIP_CC")
-
-                if tip and not CRV.empty:
-                    r = CRV[CRV["COD_ID"] == tip]
-                    if len(r):
-                        r = r.iloc[0]
-                        for i in range(1,97):
-                            k = f"POT_{i:02d}"
-                            if k in r:
-                                d[k] = float(r[k])
-
-
-                # energia mensal kWh (seu schema confirmado)
-                E_total = 0.0
-                for i in range(1,13):
-                    k = f"ENE_{i:02d}"
-                    if k in row:
+                for row in rows:
+                    # energia mensal kWh; cada UC da mesma barra contribui
+                    # para a potência trifásica do nó.
+                    energy = 0.0
+                    for i in range(1,13):
                         try:
-                            E_total += float(row[k])
-                        except:
+                            energy += float(row.get(f"ENE_{i:02d}", 0) or 0)
+                        except (TypeError, ValueError):
                             pass
-
-                if E_total <= 0:
-                    continue
-
-                # kW médio
-                P = E_total / (12 * 30 * 24 * 0.3) # 0.3 é o fator de carga médio
-
-                fases = str(row.get("FAS_CON","ABC")).upper().strip()
-
-                mask = "".join(
-                    "1" if p in fases else "0"
-                    for p in "ABC"
-                )
-
-                d["phases"] = mask
-                d["Area"] = 2
-
-                k = mask.count("1") or 1
-
-                fp = 0.95
-                def Q(x): 
-                    return x*math.tan(math.acos(fp))
-
-                if mask[0]=="1":
-                    d["Pa_kW"]=P/k; d["Qa_kVAr"]=Q(d["Pa_kW"])
-                if mask[1]=="1":
-                    d["Pb_kW"]=P/k; d["Qb_kVAr"]=Q(d["Pb_kW"])
-                if mask[2]=="1":
-                    d["Pc_kW"]=P/k; d["Qc_kVAr"]=Q(d["Pc_kW"])
-
-                n_load_applied += 1
+                    if energy <= 0:
+                        continue
+                    # O fator de carga de 0,3 converte a energia média em
+                    # uma estimativa de demanda de pico coincidente.
+                    power = energy / (12 * 30 * 24 * 0.3)
+                    phases = str(row.get("FAS_CON","ABC")).upper().strip()
+                    active = [phase for phase in "ABC" if phase in phases] or list("ABC")
+                    per_phase = power / len(active)
+                    reactive = per_phase * math.tan(math.acos(.95))
+                    d["phases"] = "".join("1" if phase in active else "0" for phase in "ABC")
+                    d["Area"] = 2
+                    for phase in active:
+                        d[f"P{phase.lower()}_kW"] += per_phase
+                        d[f"Q{phase.lower()}_kVAr"] += reactive
+                    n_load_applied += 1
 
         self.log(f"UCBT nós no grafo = {n_ucbt_nodes}")
         self.log(f"Cargas aplicadas = {n_load_applied}")

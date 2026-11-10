@@ -5,6 +5,7 @@ import json
 import math
 import os
 from pathlib import Path
+import pickle
 import re
 import shutil
 import tempfile
@@ -15,7 +16,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 ARCGIS = 'https://www.arcgis.com/sharing/rest'
 OWNER = 'aneel_aneel'
-WANTED_LAYERS = {'SEGCON','CRVCRG','UNTRAT','CTMT','SSDMT','SSDBT','UNSEMT','UNSEBT','UNTRMT','RAMLIG','UCBT','PONNOT','UCMT','UCAT'}
+WANTED_LAYERS = {'SEGCON','CRVCRG','UNTRAT','CTMT','TTEN','SSDMT','SSDBT','UNSEMT','UNSEBT','UNTRMT','RAMLIG','UCBT','PONNOT','UCMT','UCAT'}
 
 
 def standard_layer_name(layer):
@@ -90,33 +91,56 @@ def write_gdb_layer_csv(gdb, layer, standard, destination):
             writer.writerow(row)
 
 
-def migrate_consumer_table(dest, log):
-    """Acrescenta UCBT de bases já importadas que usavam o nome UCBT_tab."""
+def migrate_reference_table(dest, standard, log):
+    """Acrescenta uma tabela de referência ausente de uma base já importada."""
     metadata_path = Path(dest) / 'source.json'
     if not metadata_path.exists():
         return False
     source = json.loads(metadata_path.read_text(encoding='utf-8'))
-    if 'UCBT' in source.get('layers', {}):
+    if standard in source.get('layers', {}) and (Path(dest) / (standard + '.csv')).exists():
         return False
     gdb = Path(source.get('gdb', ''))
     if not gdb.is_dir():
         return False
     import fiona
     for layer in fiona.listlayers(gdb):
-        if standard_layer_name(layer) != 'UCBT':
+        if standard_layer_name(layer) != standard:
             continue
-        log('Atualizando UCBT a partir da tabela ' + layer)
-        temporary = Path(dest) / '.UCBT.csv.part'
+        log('Atualizando ' + standard + ' a partir da tabela ' + layer)
+        temporary = Path(dest) / ('.' + standard + '.csv.part')
         try:
-            write_gdb_layer_csv(gdb, layer, 'UCBT', temporary)
-            os.replace(temporary, Path(dest) / 'UCBT.csv')
+            write_gdb_layer_csv(gdb, layer, standard, temporary)
+            os.replace(temporary, Path(dest) / (standard + '.csv'))
         finally:
             temporary.unlink(missing_ok=True)
-        source['layers']['UCBT'] = layer
+        source.setdefault('layers', {})[standard] = layer
         metadata_path.write_text(json.dumps(source, ensure_ascii=False), encoding='utf-8')
-        log('Tabela UCBT adicionada à base local.')
+        log('Tabela ' + standard + ' adicionada à base local.')
         return True
     return False
+
+
+def migrate_consumer_table(dest, log):
+    """Compatibilidade com as bases que usavam o nome UCBT_tab."""
+    return migrate_reference_table(dest, 'UCBT', log)
+
+
+def save_electrical_graph(path, graph):
+    """Persiste o grafo já montado para a análise seguinte no mesmo PC."""
+    path = Path(path)
+    temporary = path.with_name('.' + path.name + '.part')
+    try:
+        with temporary.open('wb') as stream:
+            pickle.dump(graph, stream, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def load_electrical_graph(path):
+    """Lê somente grafos criados pelo cache local do próprio SUCURI."""
+    with Path(path).open('rb') as stream:
+        return pickle.load(stream)
 
 
 def import_aneel(item_id, data_root, cache_root, log, max_bytes):
@@ -129,8 +153,9 @@ def import_aneel(item_id, data_root, cache_root, log, max_bytes):
         raise ValueError('Download excede o limite configurado')
     dest = safe_child(data_root, 'ANEEL_' + item_id)
     if (dest / 'source.json').exists():
-        if migrate_consumer_table(dest, log):
-            log('Base existente atualizada com UCBT; reprocese o alimentador.')
+        migrated = [name for name in ('UCBT', 'TTEN') if migrate_reference_table(dest, name, log)]
+        if migrated:
+            log('Base existente atualizada com ' + ', '.join(migrated) + '; reprocese o alimentador.')
         log('Base já importada; reutilizando cópia local.')
         return {'dataset': dest.name}
     cache = Path(cache_root) / item_id
@@ -524,11 +549,30 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
             safe_child(dataset, ctmt)
             if migrate_consumer_table(dataset, log):
                 log('UCBT migrada da GDB original; incluindo consumidores no reprocessamento.')
-            ctrl = Controller(log)
-            ctrl.base_path = str(data_root)
-            result = ctrl.run_feeder_process(dataset.name, ctmt, '', True, 'Modelo Completo', output_base=str(job / 'output'), strict=True)
+            if migrate_reference_table(dataset, 'TTEN', log):
+                log('TTEN migrada da GDB original; usando a tensão nominal correta no fluxo.')
+            result = None
+            if args.get('run_powerflow'):
+                from .result_cache import find_cached, fingerprint
+                network_key = fingerprint(dataset, ctmt, args.get('crs', 'EPSG:4326'), 'network')
+                cached = find_cached(jobs_root, network_key)
+                if cached:
+                    cached_job = Path(jobs_root) / cached['id']
+                    cached_graph = cached_job / 'electrical_graph.pickle'
+                    cached_output = cached_job / 'output'
+                    if cached_graph.is_file() and cached_output.is_dir():
+                        try:
+                            result = {'graph': load_electrical_graph(cached_graph), 'output': str(cached_output)}
+                            log('Reutilizando grafo elétrico já processado; BDGD não será reconstruída.')
+                        except (OSError, EOFError, pickle.UnpicklingError, AttributeError, ImportError) as exc:
+                            log('Cache elétrico inválido; reconstruindo a rede: ' + str(exc))
+            if result is None:
+                ctrl = Controller(log)
+                ctrl.base_path = str(data_root)
+                result = ctrl.run_feeder_process(dataset.name, ctmt, '', True, 'Modelo Completo', output_base=str(job / 'output'), strict=True)
             if not result:
                 raise ValueError('Motor não retornou um resultado')
+            save_electrical_graph(job / 'electrical_graph.pickle', result['graph'])
             powerflow = None
             if args.get('run_powerflow'):
                 from core.powerflow import BackwardForwardSweep
@@ -578,7 +622,8 @@ def run_job(kind, args, data_root, jobs_root, cache_root, job_id, max_bytes):
         state.update(status='completed',result=result,completed_at=datetime.now(timezone.utc).isoformat())
         key = args.get('_cache_key')
         if kind == 'process' and key:
-            if key == fingerprint(safe_child(data_root,args['dataset']),args['feeder'],args['crs']):
+            analysis = 'powerflow' if args.get('run_powerflow') else 'network'
+            if key == fingerprint(safe_child(data_root,args['dataset']),args['feeder'],args['crs'],analysis):
                 state['cache_key'] = key
         write_json(job/'state.json',state)
         if state.get('cache_key'):

@@ -21,6 +21,9 @@ class DataRepository:
         "CRVCRG",
         "UNTRAT",
         "CTMT",
+        # TTEN converte o código CTMT.TEN_NOM para tensão nominal em volts.
+        # TEN_OPE não é uma tensão em kV: é o setpoint de operação em pu.
+        "TTEN",
         "SSDMT",
         "SSDBT",
         "UNSEMT",
