@@ -64,6 +64,14 @@ class PersistentCacheTests(TestCase):
                 run_job('process', args, root/'bases', jobs, root/'runtime'/'downloads', job_id, 100)
             self.assertIsNotNone(find_cached(jobs, args['_cache_key']))
 
+    def test_tap_settings_have_distinct_powerflow_cache_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dataset = Path(tmp)/'TEST'; dataset.mkdir()
+            (dataset/'CTMT.csv').write_text('COD_ID,NOME\nF1,Feeder\n')
+            base = fingerprint(dataset, 'F1', 'EPSG:4326', 'powerflow')
+            adjusted = fingerprint(dataset, 'F1', 'EPSG:4326', 'powerflow', {'TR_1': .95})
+            self.assertNotEqual(base, adjusted)
+
     def test_electrical_graph_cache_keeps_abc_matrices(self):
         with tempfile.TemporaryDirectory() as tmp:
             graph = nx.Graph()

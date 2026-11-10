@@ -11,10 +11,11 @@ if(!window.L){status('Não foi possível carregar o mapa. Verifique a conexão e
 const map=L.map('map',{preferCanvas:true,renderer:L.canvas({tolerance:7})}).setView([-22.91,-47.07],13);
 const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · <a href="https://www.openstreetmap.org/fixthemap">Corrigir mapa</a>',maxZoom:19}).addTo(map).on('tileerror',()=>status('Fundo indisponível. Os elementos da rede continuam acessíveis.'));
 $('basemap').onchange=()=>{const mode=$('basemap').value;$('map').classList.toggle('light-map',mode==='light');if(mode==='none')map.removeLayer(tiles);else if(!map.hasLayer(tiles))tiles.addTo(map);};
-window.addEventListener('sucuri-network',event=>{try{powerFlowVisible=Boolean(event.detail.powerflow);load(event.detail.data,event.detail.label,{dataset:event.detail.dataset,add:event.detail.add,download:event.detail.download});if(event.detail.powerflow)status(`Fluxo concluído em ${event.detail.powerflow.iterations} iterações · Vmín ${event.detail.powerflow.min_voltage_pu.toLocaleString('pt-BR',{maximumFractionDigits:4})} pu`);}catch(error){status(error.message);}});
+window.addEventListener('sucuri-network',event=>{try{if(!event.detail.powerflow&&event.detail.dataset&&event.detail.feeder)tapOverridesByNetwork.delete(tapOverrideKey(event.detail.dataset,event.detail.feeder));powerFlowVisible=Boolean(event.detail.powerflow);load(event.detail.data,event.detail.label,{dataset:event.detail.dataset,add:event.detail.add,download:event.detail.download});if(event.detail.powerflow)status(`Fluxo concluído em ${event.detail.powerflow.iterations} iterações · Vmín ${event.detail.powerflow.min_voltage_pu.toLocaleString('pt-BR',{maximumFractionDigits:4})} pu`);}catch(error){status(error.message);}});
 L.control.scale({imperial:false}).addTo(map);
 let data, layer;
 const networks=new NetworkCollection();
+const tapOverridesByNetwork=new Map();
 const enabledCategories=new Set(Object.keys(categories));
 let selectedFeatureKey='';
 let powerFlowVisible=false;
@@ -26,11 +27,12 @@ function attributes(f){
   const container=document.createElement('div'),heading=document.createElement('strong');
   heading.textContent=categories[category(f)].label;container.append(heading);
   const dl=document.createElement('dl');
-  const visual=['consumer_summary','consumer_count','consumer_classes','consumers','consumer_list_truncated','installed_load_kw','energy_monthly_kwh','energy_annual_kwh','dic_monthly_mean','fic_monthly_mean','typical_profiles','voltage_a_pu','voltage_b_pu','voltage_c_pu','voltage_avg_pu','voltage_min_pu','voltage_base_kv','pf_p_kw','pf_q_kvar','pf_current_a','pf_losses_kw','pf_losses_kvar'];
+  const visual=['consumer_summary','consumer_count','consumer_classes','consumers','consumer_list_truncated','installed_load_kw','energy_monthly_kwh','energy_annual_kwh','dic_monthly_mean','fic_monthly_mean','typical_profiles','voltage_a_pu','voltage_b_pu','voltage_c_pu','voltage_avg_pu','voltage_min_pu','voltage_base_kv','pf_p_kw','pf_q_kvar','pf_current_a','pf_losses_kw','pf_losses_kvar','tap_id','tap_ratio','tap_adjustable'];
   for(const k of [...new Set(['COD_ID','PAC','CTMT','tipo_no','tipo','CLAS_SUB','FAS_CON',...Object.keys(f.properties)])].filter(k=>k in f.properties&&!visual.includes(k))){const v=f.properties[k],dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=k;dd.textContent=typeof v==='object'?JSON.stringify(v):String(v);dl.append(dt,dd);}
   container.append(dl);
   if(f.properties.consumer_summary)container.append(consumerPanel(f.properties.consumer_summary,'Consumidores atendidos pelo transformador'));
   if(f.properties.consumer_count)container.append(consumerPanel(f.properties,'Consumidores ligados nesta barra',true));
+  if(f.properties.tap_adjustable)container.append(transformerTapPanel(f));
   if(f.properties.voltage_avg_pu!=null||f.properties.pf_p_kw!=null){const flow=document.createElement('section');flow.className='flow-panel';const title=document.createElement('strong');title.textContent='Fluxo de potência';flow.append(title);const lines=[];if(f.properties.voltage_avg_pu!=null)lines.push(`Tensões A/B/C: ${[f.properties.voltage_a_pu,f.properties.voltage_b_pu,f.properties.voltage_c_pu].map(value=>numeric(value).toFixed(4)).join(' / ')} pu`);if(f.properties.voltage_min_pu!=null)lines.push(`Tensão mínima: ${numeric(f.properties.voltage_min_pu).toFixed(4)} pu`);if(f.properties.pf_p_kw!=null)lines.push(`P: ${numeric(f.properties.pf_p_kw).toFixed(2)} kW · Q: ${numeric(f.properties.pf_q_kvar).toFixed(2)} kvar`);if(f.properties.pf_current_a!=null)lines.push(`Corrente máxima: ${numeric(f.properties.pf_current_a).toFixed(2)} A`);if(f.properties.pf_losses_kw!=null)lines.push(`Perdas: ${numeric(f.properties.pf_losses_kw).toFixed(3)} kW · ${numeric(f.properties.pf_losses_kvar).toFixed(3)} kvar`);for(const line of lines){const row=document.createElement('p');row.textContent=line;flow.append(row);}container.append(flow);}
   return container;
 }
@@ -85,6 +87,31 @@ function consumerPanel(payload,title,showList=false){
   if(showList){const list=document.createElement('ul'),detail=document.createElement('div');list.className='consumer-tree';detail.className='individual-consumer-host';for(const consumer of (payload.consumers??[]).slice(0,30)){const item=document.createElement('li');if(consumer.energy_monthly_kwh||consumer.installed_load_kw!=null){const button=document.createElement('button');button.type='button';button.textContent=`${consumer.id} · ${consumer.class}`;button.onclick=()=>{detail.replaceChildren(individualConsumerPanel(consumer));};item.append(button);}else item.textContent=`${consumer.id} · ${consumer.class}`;list.append(item);}if(payload.consumer_list_truncated){const item=document.createElement('li');item.textContent='… demais consumidores disponíveis no processamento';list.append(item);}box.append(list,detail);}
   return box;
 }
+function tapOverrideKey(dataset,feeder){return `${dataset}\u0000${feeder}`;}
+function transformerTapPanel(feature){
+  const transformerId=String(feature.properties.tap_id??feature.properties.COD_ID??'').trim();
+  const item=activeNetwork(),key=item&&tapOverrideKey(item.dataset,item.feeder),saved=key&&tapOverridesByNetwork.get(key);
+  const initial=saved?.[transformerId]??(numeric(feature.properties.tap_ratio)||1);
+  const panel=document.createElement('section');panel.className='flow-panel';
+  const title=document.createElement('strong');title.textContent='Tap do transformador';
+  const description=document.createElement('p');description.textContent='0,95 eleva a tensão secundária; 1,05 a reduz. O ajuste é aplicado apenas ao novo estudo.';
+  const controls=document.createElement('div');controls.style.cssText='display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:7px';
+  const input=document.createElement('input');input.type='number';input.min='0.8';input.max='1.2';input.step='0.0125';input.value=Number(initial).toFixed(4);input.setAttribute('aria-label','Relação de tap');input.style.cssText='width:82px';
+  const adjust=delta=>{const value=Math.min(1.2,Math.max(.8,numeric(input.value)+delta));input.value=value.toFixed(4);};
+  const minus=document.createElement('button');minus.type='button';minus.textContent='− 1,25%';minus.onclick=()=>adjust(-.0125);
+  const plus=document.createElement('button');plus.type='button';plus.textContent='+ 1,25%';plus.onclick=()=>adjust(.0125);
+  const apply=document.createElement('button');apply.type='button';apply.textContent='Aplicar e recalcular';apply.onclick=()=>{
+    const value=Number(input.value);if(!item||!transformerId||!Number.isFinite(value)||value<.8||value>1.2){status('Informe um tap entre 0,80 e 1,20.');return;}
+    const overrides={...(tapOverridesByNetwork.get(key)??{}),[transformerId]:Number(value.toFixed(4))};tapOverridesByNetwork.set(key,overrides);
+    window.dispatchEvent(new CustomEvent('sucuri-run-powerflow',{detail:{dataset:item.dataset,feeder:item.feeder,tapOverrides:overrides}}));
+  };
+  const reset=document.createElement('button');reset.type='button';reset.textContent='Usar tap original';reset.onclick=()=>{
+    if(!item)return;const overrides={...(tapOverridesByNetwork.get(key)??{})};delete overrides[transformerId];
+    if(Object.keys(overrides).length)tapOverridesByNetwork.set(key,overrides);else tapOverridesByNetwork.delete(key);
+    window.dispatchEvent(new CustomEvent('sucuri-run-powerflow',{detail:{dataset:item.dataset,feeder:item.feeder,tapOverrides:overrides}}));
+  };
+  controls.append(minus,input,plus,apply,reset);panel.append(title,description,controls);return panel;
+}
 function featureKey(f){return JSON.stringify([f._sucuri_dataset??'',feederOf(f),f.properties?.COD_ID??'',f.properties?.tipo_no??f.properties?.tipo??'',f.geometry?.type,f.geometry?.coordinates]);}
 function isSelected(f){return featureKey(f)===selectedFeatureKey;}
 function hasPowerflow(f){return f.properties?.voltage_avg_pu!=null;}
@@ -115,9 +142,12 @@ class VoltageHeatLayer extends L.Layer{
   onRemove(map){map.off('moveend zoomend resize viewreset',this.redraw);this.canvas?.remove();this.canvas=null;}
   redraw(){
     if(!this.canvas)return;const size=this.map.getSize(),pixelRatio=Math.min(window.devicePixelRatio||1,2);
+    // A tela do canvas fica no mapa (coordenadas de camada), não no viewport.
+    // Assim o pane acompanha o movimento nativo do Leaflet antes do redesenho.
+    const topLeft=this.map._getTopLeftPoint();L.DomUtil.setPosition(this.canvas,topLeft);
     this.canvas.width=size.x*pixelRatio;this.canvas.height=size.y*pixelRatio;this.canvas.style.width=`${size.x}px`;this.canvas.style.height=`${size.y}px`;
     const context=this.canvas.getContext('2d');context.scale(pixelRatio,pixelRatio);const zoom=this.map.getZoom(),radius=zoom>=16?70:zoom>=14?48:32,cell=radius*.8,bins=new Map();
-    for(const point of this.points){const position=this.map.latLngToContainerPoint([point.latitude,point.longitude]);if(position.x<-radius||position.y<-radius||position.x>size.x+radius||position.y>size.y+radius)continue;
+    for(const point of this.points){const position=this.map.latLngToLayerPoint([point.latitude,point.longitude]).subtract(topLeft);if(position.x<-radius||position.y<-radius||position.x>size.x+radius||position.y>size.y+radius)continue;
       const key=`${Math.floor(position.x/cell)}:${Math.floor(position.y/cell)}`,bin=bins.get(key)??{x:0,y:0,intensity:0,count:0};bin.x+=position.x;bin.y+=position.y;bin.intensity+=point.intensity;bin.count++;bins.set(key,bin);
     }
     for(const bin of bins.values()){const position={x:bin.x/bin.count,y:bin.y/bin.count},intensity=bin.intensity/bin.count;

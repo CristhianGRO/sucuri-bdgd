@@ -143,6 +143,33 @@ def load_electrical_graph(path):
         return pickle.load(stream)
 
 
+def apply_tap_overrides(graph, overrides):
+    """Aplica ajustes temporários de tap a um grafo já processado.
+
+    O cache permanece com a rede base. Cada estudo recebe seu próprio grafo
+    desserializado, portanto esse ajuste não altera o processamento salvo.
+    """
+    if not overrides:
+        return 0
+    normalized = {_clean_id(key): float(value) for key, value in overrides.items()}
+    matched = set()
+    for _, _, edge in graph.edges(data=True):
+        if edge.get('tipo') != 'MT_BT_Transformer_Connection':
+            continue
+        transformer_id = _clean_id(edge.get('COD_ID'))
+        if transformer_id not in normalized:
+            continue
+        params = edge.get('trafo_params')
+        if not isinstance(params, dict):
+            continue
+        params['tap_ratio'] = normalized[transformer_id]
+        matched.add(transformer_id)
+    unknown = sorted(set(normalized) - matched)
+    if unknown:
+        raise ValueError('Transformador não encontrado para ajuste de tap: ' + ', '.join(unknown[:3]))
+    return len(matched)
+
+
 def import_aneel(item_id, data_root, cache_root, log, max_bytes):
     if not re.fullmatch(r'[a-f0-9]{32}', item_id):
         raise ValueError('Identificador ArcGIS inválido')
@@ -453,6 +480,12 @@ def graph_geojson(graph, ctmt, crs, profile_index=None):
     summaries = transformer_consumer_summaries(graph, profile_index)
     def props(node, values):
         result = {k: str(v) for k,v in values.items() if not k.startswith('_') and k not in ('ucbt_row','ucbt_rows','trafo_row')}
+        if values.get('tipo') == 'MT_BT_Transformer_Connection':
+            params = values.get('trafo_params') or {}
+            result.pop('trafo_params', None)
+            result['tap_adjustable'] = True
+            result['tap_id'] = str(values.get('COD_ID') or '')
+            result['tap_ratio'] = round(_number(params.get('tap_ratio')) or 1.0, 4)
         consumer = values.get('ucbt_row')
         if isinstance(consumer, dict):
             for key in CONSUMER_FIELDS:
@@ -502,6 +535,15 @@ def append_consumer_visuals(path, graph, ctmt, crs, profile_index=None):
     edge_flow_fields = ('pf_p_kw', 'pf_q_kvar', 'pf_current_a', 'pf_losses_kw', 'pf_losses_kvar')
     node_flow = {str(feature['properties'].get('COD_ID')): feature['properties'] for feature in graph_nodes}
     edge_flow = {str(feature['properties'].get('COD_ID')): feature['properties'] for feature in generated['features'] if feature['geometry'].get('type') == 'LineString'}
+    transformer_taps = {
+        _clean_id(edge.get('COD_ID')): {
+            'tap_adjustable': True,
+            'tap_id': str(edge.get('COD_ID') or ''),
+            'tap_ratio': round(_number((edge.get('trafo_params') or {}).get('tap_ratio')) or 1.0, 4),
+        }
+        for _, _, edge in graph.edges(data=True)
+        if edge.get('tipo') == 'MT_BT_Transformer_Connection'
+    }
     existing_pacs = set()
     for feature in document['features']:
         props = feature.get('properties') or {}
@@ -512,6 +554,10 @@ def append_consumer_visuals(path, graph, ctmt, crs, profile_index=None):
         summary = summaries.get(_clean_id(props.get('PAC_2')))
         if summary and str(props.get('tipo') or '').upper().split('.')[-1] == 'UNTRMT':
             props['consumer_summary'] = summary
+        if str(props.get('tipo') or '').upper().split('.')[-1] == 'UNTRMT':
+            tap = transformer_taps.get(_clean_id(props.get('COD_ID')))
+            if tap:
+                props.update(tap)
         for key in ('PAC', 'PAC_1', 'PAC_2', 'COD_ID'):
             source = node_flow.get(str(props.get(key)))
             if source:
@@ -576,6 +622,9 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
             powerflow = None
             if args.get('run_powerflow'):
                 from core.powerflow import BackwardForwardSweep
+                adjusted = apply_tap_overrides(result['graph'], args.get('tap_overrides') or {})
+                if adjusted:
+                    log(f'Aplicando ajuste de tap em {adjusted} transformador(es).')
                 log('Executando fluxo de potência trifásico por varredura direta/inversa')
                 powerflow = BackwardForwardSweep().solve(result['graph'])
                 log(f"Fluxo concluído: {powerflow['iterations']} iterações; Vmín={powerflow['min_voltage_pu']:.4f} pu; enlaces ignorados={powerflow['radial_links_ignored']}")
@@ -597,7 +646,7 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
                 if not geo['features']:
                     raise ValueError('Rede sem coordenadas válidas; confira o CRS da base')
                 (job/'network.geojson').write_text(json.dumps(geo,ensure_ascii=False,allow_nan=False),encoding='utf-8')
-            summary = {'dataset':dataset.name,'feeder':ctmt,'nodes':result['graph'].number_of_nodes(),'edges':result['graph'].number_of_edges(),'nodes_without_coordinates':missing,'geometry':geometry_mode,'powerflow':powerflow,'note':('Fluxo de potência trifásico por varredura direta/inversa.' if powerflow else 'Arquivos de entrada para fluxo de potência; simulação não executada.')}
+            summary = {'dataset':dataset.name,'feeder':ctmt,'nodes':result['graph'].number_of_nodes(),'edges':result['graph'].number_of_edges(),'nodes_without_coordinates':missing,'geometry':geometry_mode,'powerflow':powerflow,'tap_overrides':args.get('tap_overrides') or {},'note':('Fluxo de potência trifásico por varredura direta/inversa.' if powerflow else 'Arquivos de entrada para fluxo de potência; simulação não executada.')}
             (job/'report.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
             with zipfile.ZipFile(job/'powerflow.zip','w',zipfile.ZIP_DEFLATED) as archive:
                 for path in Path(result['output']).rglob('*'):
@@ -623,7 +672,7 @@ def run_job(kind, args, data_root, jobs_root, cache_root, job_id, max_bytes):
         key = args.get('_cache_key')
         if kind == 'process' and key:
             analysis = 'powerflow' if args.get('run_powerflow') else 'network'
-            if key == fingerprint(safe_child(data_root,args['dataset']),args['feeder'],args['crs'],analysis):
+            if key == fingerprint(safe_child(data_root,args['dataset']),args['feeder'],args['crs'],analysis,args.get('tap_overrides')):
                 state['cache_key'] = key
         write_json(job/'state.json',state)
         if state.get('cache_key'):

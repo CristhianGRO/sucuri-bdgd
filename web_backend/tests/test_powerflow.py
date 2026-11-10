@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from app.controller import Controller
 from core.powerflow import BackwardForwardSweep
+from web_backend.worker import apply_tap_overrides
 
 
 class BackwardForwardSweepTests(TestCase):
@@ -35,6 +36,14 @@ class BackwardForwardSweepTests(TestCase):
         graph.add_edge('SE', 'BT', tipo='MT_BT_Transformer_Connection', trafo_params={'Snom':45, 'Rpu':0, 'Xpu':0, 'Vsec':.22, 'tap_ratio':.95})
         BackwardForwardSweep().solve(graph)
         self.assertAlmostEqual(graph.nodes['BT']['voltage_avg_pu'], 1/.95, places=4)
+
+    def test_tap_override_changes_only_the_selected_transformer(self):
+        graph = nx.Graph()
+        graph.add_edge('SE', 'BT', tipo='MT_BT_Transformer_Connection', COD_ID='TR_1', trafo_params={'tap_ratio': 1.0})
+        graph.add_edge('SE', 'OTHER', tipo='MT_BT_Transformer_Connection', COD_ID='TR_2', trafo_params={'tap_ratio': 1.0})
+        self.assertEqual(apply_tap_overrides(graph, {'tr_1': .95}), 1)
+        self.assertEqual(graph['SE']['BT']['trafo_params']['tap_ratio'], .95)
+        self.assertEqual(graph['SE']['OTHER']['trafo_params']['tap_ratio'], 1.0)
 
     def test_substation_setpoint_is_not_interpreted_as_a_voltage_base(self):
         graph = nx.Graph()

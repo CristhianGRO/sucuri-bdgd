@@ -86,11 +86,29 @@ class Service:
         run_powerflow = args.get('run_powerflow', False)
         if not isinstance(run_powerflow, bool):
             raise ValueError('run_powerflow deve ser booleano')
-        return {'dataset':dataset,'feeder':feeder,'crs':crs,'run_powerflow':run_powerflow}
+        raw_taps = args.get('tap_overrides', {})
+        if raw_taps is None:
+            raw_taps = {}
+        if not isinstance(raw_taps, dict) or len(raw_taps) > 200:
+            raise ValueError('tap_overrides deve conter no máximo 200 transformadores')
+        tap_overrides = {}
+        for transformer_id, value in raw_taps.items():
+            if not isinstance(transformer_id, str) or not re.fullmatch(r'[\w.-]{1,128}', transformer_id, re.UNICODE):
+                raise ValueError('Identificador de transformador inválido')
+            try:
+                tap = float(value)
+            except (TypeError, ValueError):
+                raise ValueError('Tap deve ser numérico') from None
+            if not 0.8 <= tap <= 1.2:
+                raise ValueError('Tap deve estar entre 0,80 e 1,20')
+            tap_overrides[transformer_id.strip().upper()] = round(tap, 6)
+        if tap_overrides and not run_powerflow:
+            raise ValueError('Ajuste de tap requer a execução do fluxo de potência')
+        return {'dataset':dataset,'feeder':feeder,'crs':crs,'run_powerflow':run_powerflow,'tap_overrides':tap_overrides}
 
     def cache_status(self, args):
         args = self.process_arguments(args)
-        key = fingerprint(self.dataset_path(args['dataset']),args['feeder'],args['crs'],'powerflow' if args['run_powerflow'] else 'network')
+        key = fingerprint(self.dataset_path(args['dataset']),args['feeder'],args['crs'],'powerflow' if args['run_powerflow'] else 'network',args['tap_overrides'])
         saved = find_cached(self.jobs_root,key)
         return {'available':bool(saved),'id':saved['id'] if saved else None,'completed_at':saved.get('completed_at') if saved else None}
 
@@ -103,7 +121,7 @@ class Service:
         if kind == 'process':
             args = self.process_arguments(args)
             input_root = self.dataset_path(args['dataset']).parent
-            key = fingerprint(self.dataset_path(args['dataset']),args['feeder'],args['crs'],'powerflow' if args['run_powerflow'] else 'network')
+            key = fingerprint(self.dataset_path(args['dataset']),args['feeder'],args['crs'],'powerflow' if args['run_powerflow'] else 'network',args['tap_overrides'])
             args['_cache_key'] = key
         else:
             args = {'item_id':args['item_id']}

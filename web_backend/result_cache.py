@@ -25,7 +25,7 @@ def write_json(path, value):
             os.unlink(temporary)
 
 
-def fingerprint(dataset, feeder, crs, analysis='network'):
+def fingerprint(dataset, feeder, crs, analysis='network', tap_overrides=None):
     dataset = Path(dataset).resolve()
     files = sorted(dataset.glob('*.csv'))
     metadata = dataset / 'source.json'
@@ -44,7 +44,8 @@ def fingerprint(dataset, feeder, crs, analysis='network'):
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
             versions[package] = None
-    value = {'dataset':str(dataset),'feeder':str(feeder),'crs':crs,'analysis':analysis,'sources':sources,'engine':engine.hexdigest(),'python':sys.version,'packages':versions}
+    taps = {str(key).strip().upper(): round(float(value), 6) for key, value in sorted((tap_overrides or {}).items())}
+    value = {'dataset':str(dataset),'feeder':str(feeder),'crs':crs,'analysis':analysis,'tap_overrides':taps,'sources':sources,'engine':engine.hexdigest(),'python':sys.version,'packages':versions}
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
