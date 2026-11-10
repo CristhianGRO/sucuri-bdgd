@@ -22,7 +22,7 @@ export function category(feature){
   const type=String(p.tipo_no||p.tipo||'').toUpperCase().split('.').pop();
   if(['SUBSTATION','SUBESTACAO','SUBESTAÇÃO'].includes(type))return 'substation';
   if(['UCBT','UCMT','UCAT','LOAD','CONSUMER','CARGA'].includes(type))return consumerClass(p);
-  if(type==='CONSUMERANCHOR')return 'consumers';
+  if(['CONSUMERANCHOR','CONSUMERCLUSTER'].includes(type))return 'consumers';
   if(['UNTRMT','UNTRAT','TRANSFORMER_SEC','MT_BT_TRANSFORMER_CONNECTION','TRANSFORMER'].includes(type))return 'transformer';
   if(['SSDMT','MV_LINE','MV_SWITCH','UNSEMT','PAC_MV','MT_NODE'].includes(type))return 'mt';
   if(['SSDBT','RAMLIG','UNSEBT','PAC_LV','PAC_RAMLIG','BT_NODE'].includes(type))return 'bt';

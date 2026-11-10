@@ -2,6 +2,7 @@ import {downloadResult} from './api.mjs';
 import {categories,category,consumerClass,symbolSVG} from './symbology.mjs';
 import {validate,toKML,demoData} from './model.mjs';
 import {NetworkCollection,mapFeederOf as feederOf,selectMapFeeder as selected,visibleSelection} from './networks.mjs';
+import {detailData} from './lod.mjs';
 const $=id=>document.getElementById(id);
 function status(message){$('status').textContent=message;}
 if(!window.L){status('Não foi possível carregar o mapa. Verifique a conexão e recarregue a página.');throw Error('Leaflet unavailable');}
@@ -12,8 +13,8 @@ window.addEventListener('sucuri-network',event=>{try{load(event.detail.data,even
 L.control.scale({imperial:false}).addTo(map);
 let data, layer, showConsumers=false;
 const networks=new NetworkCollection();
-let demoActive=false;
-map.on('zoomend',()=>{if(layer)layer.setStyle(style);});
+let demoActive=false, redrawTimer;
+map.on('moveend',()=>{if(!layer)return;clearTimeout(redrawTimer);redrawTimer=setTimeout(()=>draw(),80);});
 function attributes(f){
   const container=document.createElement('div'),heading=document.createElement('strong');
   heading.textContent=categories[category(f)].label;container.append(heading);
@@ -41,8 +42,15 @@ function consumerAnchorIcon(f){
   const consumers=(f.properties.consumers??[]).slice(0,24),count=Number(f.properties.consumer_count??consumers.length),dots=consumers.map((consumer,index)=>{const angle=Math.round(index/Math.max(consumers.length,1)*360),radius=24+(index%3)*7;return `<i class="consumer-dot" style="--consumer-angle:${angle}deg;--consumer-radius:${radius}px;background:${consumerColor(consumer.class)}"></i>`;}).join('');
   return L.divIcon({className:'consumer-anchor-marker',html:`<div class="consumer-anchor${showConsumers?' is-pinned':''}" aria-label="${count} consumidores conectados"><span class="consumer-hand">${dots}</span><span class="consumer-badge">${count}</span></div>`,iconSize:[116,116],iconAnchor:[58,58]});
 }
+function consumerClusterIcon(f){
+  const count=Number(f.properties.consumer_count??0),classes=Object.entries(f.properties.consumer_classes??{}),total=Math.max(count,1);let progress=0;
+  const slices=classes.map(([name,value])=>{const start=progress;progress+=Number(value)/total*100;return `${consumerColor(name)} ${start}% ${progress}%`;});
+  const background=slices.length?`conic-gradient(${slices.join(',')})`:'#d7dde2';
+  return L.divIcon({className:'consumer-cluster-marker',html:`<div class="consumer-cluster${showConsumers?' is-pinned':''}" aria-label="${count} consumidores na região" style="--consumer-cluster:${background}"><span>${count}</span></div>`,iconSize:[46,46],iconAnchor:[23,23]});
+}
 function pointLayer(f,ll){
   const key=category(f);
+  if(String(f.properties.tipo||'').toUpperCase()==='CONSUMERCLUSTER')return L.marker(ll,{icon:consumerClusterIcon(f),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:`${f.properties.consumer_count} consumidores nesta região`,riseOnHover:true,riseOffset:1100});
   if(key==='consumers')return L.marker(ll,{icon:consumerAnchorIcon(f),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:`${f.properties.consumer_count} consumidores conectados`,riseOnHover:true,riseOffset:1100});
   if(['res','com','ind','load','transformer','substation'].includes(key)){
     return L.marker(ll,{icon:L.divIcon({className:`network-symbol symbol-${key}`,html:symbolSVG(key),iconSize:key==='substation'?[60,48]:[40,40],iconAnchor:key==='substation'?[30,24]:[20,20]}),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:categories[key].label,riseOnHover:true,riseOffset:1000,zIndexOffset:key==='substation'?2000:key==='transformer'?500:300});
@@ -67,7 +75,8 @@ function draw(fit=false){
   if(layer) map.removeLayer(layer);
   const id=$('feeder').value;
   const visible=id&&$('isolate').checked?selected(data,id):data;
-  layer=L.geoJSON(visible,{style,pointToLayer:pointLayer,onEachFeature:(f,l)=>{
+  const bounds=map.getBounds().pad(.18),renderable=detailData(visible,map.getZoom(),{west:bounds.getWest(),east:bounds.getEast(),south:bounds.getSouth(),north:bounds.getNorth()});
+  layer=L.geoJSON(renderable,{style,pointToLayer:pointLayer,onEachFeature:(f,l)=>{
     const info=attributes(f),hint=document.createElement('p');
     hint.className='tooltip-hint';hint.textContent='Clique para fixar os detalhes no painel.';info.insertBefore(hint,info.children[1]);
     l.bindTooltip(info,{sticky:true,direction:'auto',offset:[18,-18],className:'network-tooltip',opacity:1});
