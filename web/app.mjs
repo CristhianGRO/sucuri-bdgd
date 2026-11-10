@@ -142,9 +142,9 @@ class VoltageHeatLayer extends L.Layer{
   onRemove(map){map.off('moveend zoomend resize viewreset',this.redraw);this.canvas?.remove();this.canvas=null;}
   redraw(){
     if(!this.canvas)return;const size=this.map.getSize(),pixelRatio=Math.min(window.devicePixelRatio||1,2);
-    // A tela do canvas fica no mapa (coordenadas de camada), não no viewport.
-    // Assim o pane acompanha o movimento nativo do Leaflet antes do redesenho.
-    const topLeft=this.map._getTopLeftPoint();L.DomUtil.setPosition(this.canvas,topLeft);
+    // O canvas é posicionado em coordenadas de camada, como o renderer Canvas
+    // nativo do Leaflet. Assim ele permanece geograficamente ancorado no pan.
+    const topLeft=this.map.containerPointToLayerPoint([0,0]);L.DomUtil.setPosition(this.canvas,topLeft);
     this.canvas.width=size.x*pixelRatio;this.canvas.height=size.y*pixelRatio;this.canvas.style.width=`${size.x}px`;this.canvas.style.height=`${size.y}px`;
     const context=this.canvas.getContext('2d');context.scale(pixelRatio,pixelRatio);const zoom=this.map.getZoom(),radius=zoom>=16?70:zoom>=14?48:32,cell=radius*.8,bins=new Map();
     for(const point of this.points){const position=this.map.latLngToLayerPoint([point.latitude,point.longitude]).subtract(topLeft);if(position.x<-radius||position.y<-radius||position.x>size.x+radius||position.y>size.y+radius)continue;
