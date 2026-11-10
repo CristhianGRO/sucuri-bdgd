@@ -15,6 +15,7 @@ L.control.scale({imperial:false}).addTo(map);
 let data, layer;
 const networks=new NetworkCollection();
 const enabledCategories=new Set(Object.keys(categories));
+let selectedFeatureKey='';
 let demoActive=false, redrawTimer;
 map.on('moveend',()=>{if(!layer)return;clearTimeout(redrawTimer);redrawTimer=setTimeout(()=>draw(),80);});
 function attributes(f){
@@ -79,23 +80,25 @@ function consumerPanel(payload,title,showList=false){
   if(showList){const list=document.createElement('ul'),detail=document.createElement('div');list.className='consumer-tree';detail.className='individual-consumer-host';for(const consumer of (payload.consumers??[]).slice(0,30)){const item=document.createElement('li');if(consumer.energy_monthly_kwh||consumer.installed_load_kw!=null){const button=document.createElement('button');button.type='button';button.textContent=`${consumer.id} · ${consumer.class}`;button.onclick=()=>{detail.replaceChildren(individualConsumerPanel(consumer));};item.append(button);}else item.textContent=`${consumer.id} · ${consumer.class}`;list.append(item);}if(payload.consumer_list_truncated){const item=document.createElement('li');item.textContent='… demais consumidores disponíveis no processamento';list.append(item);}box.append(list,detail);}
   return box;
 }
-function style(f){const active=!$('feeder').value || feederOf(f)===$('feeder').value;return {color:categories[category(f)].color,weight:f.geometry.type==='Point'?1:(active?2:1),opacity:active?1:.16,fillOpacity:active?.85:.16,radius:map.getZoom()>=16?5:3.5};}
+function featureKey(f){return JSON.stringify([f._sucuri_dataset??'',feederOf(f),f.properties?.COD_ID??'',f.properties?.tipo_no??f.properties?.tipo??'',f.geometry?.type,f.geometry?.coordinates]);}
+function isSelected(f){return featureKey(f)===selectedFeatureKey;}
+function style(f){const active=!$('feeder').value || feederOf(f)===$('feeder').value,selected=isSelected(f),key=category(f);return {color:selected?'#ffffff':categories[key].color,weight:f.geometry.type==='Point'?(selected?3:1):(selected?5:(active?2:1)),opacity:active?1:.16,fillOpacity:selected?1:(active?.85:.16),radius:selected?Math.max(map.getZoom()>=16?7:6,6):(map.getZoom()>=16?5:3.5)};}
 function consumerAnchorIcon(f){
   const consumers=(f.properties.consumers??[]).slice(0,24),count=Number(f.properties.consumer_count??consumers.length),dots=consumers.map((consumer,index)=>{const angle=Math.round(index/Math.max(consumers.length,1)*360),radius=24+(index%3)*7;return `<i class="consumer-dot" style="--consumer-angle:${angle}deg;--consumer-radius:${radius}px;background:${consumerColor(consumer.class)}"></i>`;}).join('');
-  return L.divIcon({className:'consumer-anchor-marker',html:`<div class="consumer-anchor is-pinned" aria-label="${count} consumidores conectados"><span class="consumer-hand">${dots}</span><span class="consumer-badge">${count}</span></div>`,iconSize:[116,116],iconAnchor:[58,58]});
+  return L.divIcon({className:'consumer-anchor-marker',html:`<div class="consumer-anchor is-pinned${isSelected(f)?' is-selected':''}" aria-label="${count} consumidores conectados"><span class="consumer-hand">${dots}</span><span class="consumer-badge">${count}</span></div>`,iconSize:[116,116],iconAnchor:[58,58]});
 }
 function consumerClusterIcon(f){
   const count=Number(f.properties.consumer_count??0),classes=Object.entries(f.properties.consumer_classes??{}),total=Math.max(count,1);let progress=0;
   const slices=classes.map(([name,value])=>{const start=progress;progress+=Number(value)/total*100;return `${consumerColor(name)} ${start}% ${progress}%`;});
   const background=slices.length?`conic-gradient(${slices.join(',')})`:'#d7dde2';
-  return L.divIcon({className:'consumer-cluster-marker',html:`<div class="consumer-cluster is-pinned" aria-label="${count} consumidores na região" style="--consumer-cluster:${background}"><span>${count}</span></div>`,iconSize:[46,46],iconAnchor:[23,23]});
+  return L.divIcon({className:'consumer-cluster-marker',html:`<div class="consumer-cluster is-pinned${isSelected(f)?' is-selected':''}" aria-label="${count} consumidores na região" style="--consumer-cluster:${background}"><span>${count}</span></div>`,iconSize:[46,46],iconAnchor:[23,23]});
 }
 function pointLayer(f,ll){
   const key=category(f);
   if(String(f.properties.tipo||'').toUpperCase()==='CONSUMERCLUSTER')return L.marker(ll,{icon:consumerClusterIcon(f),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:`${f.properties.consumer_count} consumidores nesta região`,riseOnHover:true,riseOffset:1100});
   if(key==='consumers')return L.marker(ll,{icon:consumerAnchorIcon(f),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:`${f.properties.consumer_count} consumidores conectados`,riseOnHover:true,riseOffset:1100});
   if(['res','com','ind','load','transformer','substation'].includes(key)){
-    return L.marker(ll,{icon:L.divIcon({className:`network-symbol symbol-${key}`,html:symbolSVG(key),iconSize:key==='substation'?[60,48]:[40,40],iconAnchor:key==='substation'?[30,24]:[20,20]}),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:categories[key].label,riseOnHover:true,riseOffset:1000,zIndexOffset:key==='substation'?2000:key==='transformer'?500:300});
+    return L.marker(ll,{icon:L.divIcon({className:`network-symbol symbol-${key}${isSelected(f)?' is-selected':''}`,html:symbolSVG(key),iconSize:key==='substation'?[60,48]:[40,40],iconAnchor:key==='substation'?[30,24]:[20,20]}),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:categories[key].label,riseOnHover:true,riseOffset:1000,zIndexOffset:key==='substation'?2000:key==='transformer'?500:300});
   }
   return L.circleMarker(ll,style(f));
 }
@@ -139,7 +142,7 @@ function draw(fit=false){
       element.addEventListener('focus',()=>{highlight();l.openTooltip();});
       element.addEventListener('blur',()=>{restore();l.closeTooltip();});
     });
-    l.on('click',()=>{$('feeder').value=feederOf(f);$('details').replaceChildren(attributes(f));draw();});
+    l.on('click',()=>{selectedFeatureKey=featureKey(f);$('feeder').value=feederOf(f);$('details').replaceChildren(attributes(f));$('details').parentElement.open=true;const bounds=l.getBounds?.();if(bounds?.isValid?.())map.fitBounds(bounds,{padding:[90,90],maxZoom:17});else if(l.getLatLng)map.setView(l.getLatLng(),Math.max(map.getZoom(),16));draw();});
   }}).addTo(map);
   $('count').textContent=visible.features.length.toLocaleString('pt-BR');
   $('geojson').disabled=$('kmz').disabled=!id;
