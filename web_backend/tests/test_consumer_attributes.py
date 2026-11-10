@@ -45,6 +45,11 @@ class ConsumerAttributes(TestCase):
         self.assertEqual(props['fic_monthly_mean'],3)
         self.assertEqual(props['typical_profiles'][0]['day'],'DU')
         self.assertEqual(props['typical_profiles'][0]['points'][:2],[50,100])
+        individual=props['consumers'][0]
+        self.assertEqual(individual['installed_load_kw'],4.5)
+        self.assertEqual(individual['energy_monthly_kwh'][:2],[10,20])
+        self.assertEqual(individual['dic_monthly_mean'],1.5)
+        self.assertEqual(individual['typical_profiles'][0]['points'][:2],[50,100])
 
     def test_multiple_consumers_are_grouped_at_the_bus_and_transformer(self):
         graph=nx.Graph()

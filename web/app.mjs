@@ -48,6 +48,24 @@ function profileChart(profiles){
   profiles.forEach((profile,index)=>{const button=document.createElement('button');button.type='button';button.textContent=profile.day;button.className=index?'':'active';button.onclick=()=>{for(const item of choices.children)item.classList.remove('active');button.classList.add('active');render(profile);};choices.append(button);});
   render(profiles[0]);return chart;
 }
+function indicatorPanel(payload){
+  const indicators=[];
+  if(payload.installed_load_kw!=null)indicators.push(`Carga instalada: ${numeric(payload.installed_load_kw).toLocaleString('pt-BR',{maximumFractionDigits:2})} kW`);
+  if(payload.energy_annual_kwh!=null)indicators.push(`Energia anual: ${numeric(payload.energy_annual_kwh).toLocaleString('pt-BR',{maximumFractionDigits:1})} kWh`);
+  if(payload.dic_monthly_mean!=null)indicators.push(`DIC médio mensal: ${numeric(payload.dic_monthly_mean).toLocaleString('pt-BR',{maximumFractionDigits:2})} h`);
+  if(payload.fic_monthly_mean!=null)indicators.push(`FIC médio mensal: ${numeric(payload.fic_monthly_mean).toLocaleString('pt-BR',{maximumFractionDigits:2})}`);
+  if(!indicators.length)return null;
+  const metrics=document.createElement('div');metrics.className='consumer-metrics';for(const item of indicators){const metric=document.createElement('span');metric.textContent=item;metrics.append(metric);}return metrics;
+}
+function individualConsumerPanel(consumer){
+  const box=document.createElement('section');box.className='individual-consumer';
+  const title=document.createElement('strong');title.textContent=`UC ${consumer.id}`;box.append(title);
+  const subtitle=document.createElement('p');subtitle.textContent=`Classe: ${consumer.class}${consumer.profile_code?` · Curva: ${consumer.profile_code}`:''}`;box.append(subtitle);
+  const metrics=indicatorPanel(consumer);if(metrics)box.append(metrics);
+  if(Array.isArray(consumer.energy_monthly_kwh)&&consumer.energy_monthly_kwh.some(numeric))box.append(energyChart(consumer.energy_monthly_kwh));
+  if(Array.isArray(consumer.typical_profiles)&&consumer.typical_profiles.length)box.append(profileChart(consumer.typical_profiles));
+  return box;
+}
 function consumerPanel(payload,title,showList=false){
   const box=document.createElement('section');box.className='consumer-panel';
   const heading=document.createElement('strong');heading.textContent=title;box.append(heading);
@@ -55,15 +73,10 @@ function consumerPanel(payload,title,showList=false){
   const total=Number(payload.consumer_count??classes.reduce((sum,[,count])=>sum+Number(count),0));
   if(classes.length){let progress=0;const slices=classes.map(([name,count])=>{const start=progress;progress+=Number(count)/total*100;return `${consumerColor(name)} ${start}% ${progress}%`;});const row=document.createElement('div');row.className='consumer-breakdown';const pie=document.createElement('span');pie.className='consumer-pie';pie.style.background=`conic-gradient(${slices.join(',')})`;pie.setAttribute('aria-label',`${total} consumidores`);const legend=document.createElement('ul');for(const [name,count] of classes){const item=document.createElement('li'),swatch=document.createElement('i');swatch.style.backgroundColor=consumerColor(name);item.append(swatch,document.createTextNode(`${name}: ${count}`));legend.append(item);}row.append(pie,legend);box.append(row);}
   else {const empty=document.createElement('p');empty.textContent='Nenhum consumidor classificado.';box.append(empty);}
-  const indicators=[];
-  if(payload.installed_load_kw!=null)indicators.push(`Carga instalada: ${numeric(payload.installed_load_kw).toLocaleString('pt-BR',{maximumFractionDigits:2})} kW`);
-  if(payload.energy_annual_kwh!=null)indicators.push(`Energia anual: ${numeric(payload.energy_annual_kwh).toLocaleString('pt-BR',{maximumFractionDigits:1})} kWh`);
-  if(payload.dic_monthly_mean!=null)indicators.push(`DIC médio mensal: ${numeric(payload.dic_monthly_mean).toLocaleString('pt-BR',{maximumFractionDigits:2})} h`);
-  if(payload.fic_monthly_mean!=null)indicators.push(`FIC médio mensal: ${numeric(payload.fic_monthly_mean).toLocaleString('pt-BR',{maximumFractionDigits:2})}`);
-  if(indicators.length){const metrics=document.createElement('div');metrics.className='consumer-metrics';for(const item of indicators){const metric=document.createElement('span');metric.textContent=item;metrics.append(metric);}box.append(metrics);}
+  const metrics=indicatorPanel(payload);if(metrics)box.append(metrics);
   if(Array.isArray(payload.energy_monthly_kwh)&&payload.energy_monthly_kwh.some(numeric))box.append(energyChart(payload.energy_monthly_kwh));
   if(Array.isArray(payload.typical_profiles)&&payload.typical_profiles.length)box.append(profileChart(payload.typical_profiles));
-  if(showList){const list=document.createElement('ul');list.className='consumer-tree';for(const consumer of (payload.consumers??[]).slice(0,30)){const item=document.createElement('li');item.textContent=`${consumer.id} · ${consumer.class}`;list.append(item);}if(payload.consumer_list_truncated){const item=document.createElement('li');item.textContent='… demais consumidores disponíveis no processamento';list.append(item);}box.append(list);}
+  if(showList){const list=document.createElement('ul'),detail=document.createElement('div');list.className='consumer-tree';detail.className='individual-consumer-host';for(const consumer of (payload.consumers??[]).slice(0,30)){const item=document.createElement('li');if(consumer.energy_monthly_kwh||consumer.installed_load_kw!=null){const button=document.createElement('button');button.type='button';button.textContent=`${consumer.id} · ${consumer.class}`;button.onclick=()=>{detail.replaceChildren(individualConsumerPanel(consumer));};item.append(button);}else item.textContent=`${consumer.id} · ${consumer.class}`;list.append(item);}if(payload.consumer_list_truncated){const item=document.createElement('li');item.textContent='… demais consumidores disponíveis no processamento';list.append(item);}box.append(list,detail);}
   return box;
 }
 function style(f){const active=!$('feeder').value || feederOf(f)===$('feeder').value;return {color:categories[category(f)].color,weight:f.geometry.type==='Point'?1:(active?2:1),opacity:active?1:.16,fillOpacity:active?.85:.16,radius:map.getZoom()>=16?5:3.5};}

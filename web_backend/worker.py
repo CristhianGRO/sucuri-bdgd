@@ -253,7 +253,35 @@ def consumer_profile_summary(rows, profile_index):
     return result
 
 
-def consumer_payload(rows, profile_index=None, limit=200):
+def consumer_detail(row, profile_index):
+    """Campos de uma UC que podem aparecer ao selecionar sua folha no mapa."""
+    energy = [_number(row.get(f'ENE_{index:02d}')) or 0 for index in range(1, 13)]
+    dic = [_number(row.get(f'DIC_{index:02d}')) for index in range(1, 13)]
+    fic = [_number(row.get(f'FIC_{index:02d}')) for index in range(1, 13)]
+    detail = {
+        'id': str(row.get('COD_ID') or row.get('NUM_UC') or row.get('CEG') or '').strip() or 'Sem identificador',
+        'class': str(row.get('CLAS_SUB') or 'Não informado').strip() or 'Não informado',
+        'profile_code': str(row.get('TIP_CC') or '').strip(),
+    }
+    capacity = _number(row.get('CAR_INST'))
+    if capacity is not None:
+        detail['installed_load_kw'] = round(capacity, 2)
+    if any(energy):
+        detail['energy_monthly_kwh'] = [round(value, 2) for value in energy]
+        detail['energy_annual_kwh'] = round(sum(energy), 2)
+    dic = [value for value in dic if value is not None]
+    fic = [value for value in fic if value is not None]
+    if dic:
+        detail['dic_monthly_mean'] = round(sum(dic) / len(dic), 2)
+    if fic:
+        detail['fic_monthly_mean'] = round(sum(fic) / len(fic), 2)
+    profiles = consumer_profile_summary([row], profile_index)
+    if profiles:
+        detail['typical_profiles'] = profiles
+    return detail
+
+
+def consumer_payload(rows, profile_index=None, limit=200, include_details=False):
     """Produz indicadores agregados de UCs, sem expor seu registro completo."""
     classes = {}
     consumers = []
@@ -277,7 +305,10 @@ def consumer_payload(rows, profile_index=None, limit=200):
                 fic.append(value)
         if len(consumers) < limit:
             consumer_id = str(row.get('COD_ID') or row.get('NUM_UC') or row.get('CEG') or '').strip()
-            consumers.append({'id': consumer_id or 'Sem identificador', 'class': consumer_class})
+            consumers.append(
+                consumer_detail(row, profile_index or {}) if include_details
+                else {'id': consumer_id or 'Sem identificador', 'class': consumer_class}
+            )
     result = {
         'consumer_count': len(rows),
         'consumer_classes': classes,
@@ -380,7 +411,7 @@ def consumer_anchor_features(graph, coordinates, ctmt, profile_index=None):
                 'tipo': 'ConsumerAnchor',
                 'anchor_pac': str(anchor_node),
                 'position_estimated': approximate,
-                **consumer_payload(rows, profile_index),
+                **consumer_payload(rows, profile_index, include_details=True),
             },
             'geometry': {'type': 'Point', 'coordinates': coordinate},
         })
@@ -404,7 +435,7 @@ def graph_geojson(graph, ctmt, crs, profile_index=None):
                     result[key] = str(value)
         rows = _consumer_rows(values)
         if rows:
-            result.update(consumer_payload(rows, profile_index))
+            result.update(consumer_payload(rows, profile_index, include_details=True))
         summary = summaries.get(_clean_id(node))
         if summary:
             result['consumer_summary'] = summary
