@@ -15,7 +15,9 @@ def main():
     args=parser.parse_args()
     base=Path(args.data)/'SYNTHETIC_SMOKE';base.mkdir(parents=True,exist_ok=True)
     tables={
-        'CTMT':'COD_ID,NOME,PAC_INI,TEN_OPE\nF1,Synthetic feeder,A,1.0\n',
+        # TEN_NOM é o código TTEN da tensão-base LL; 49 = 13,8 kV no
+        # dicionário ANEEL incorporado ao motor.
+        'CTMT':'COD_ID,NOME,PAC_INI,TEN_NOM,TEN_OPE\nF1,Synthetic feeder,A,49,1.0\n',
         'SSDMT':'COD_ID,CTMT,PAC_1,PAC_2,PN_CON_1,PN_CON_2,FAS_CON,COMP,TIP_CND\nL1,F1,A,B,N1,N2,ABC,100,C1\n',
         'PONNOT':'COD_ID,X,Y\nN1,-51.0,-30.0\nN2,-51.001,-30.001\n',
         'SEGCON':'COD_ID,R1,X1\nC1,0.3,0.4\n',
