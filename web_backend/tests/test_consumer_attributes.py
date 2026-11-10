@@ -110,3 +110,15 @@ class ConsumerAttributes(TestCase):
         nodes={feature['properties']['COD_ID']:feature['properties'] for feature in features}
         self.assertEqual(nodes['SE']['tipo_no'],'Substation')
         self.assertEqual(nodes['BT']['tipo_no'],'PAC_LV')
+
+    def test_original_line_receives_powerflow_metrics_by_cod_id(self):
+        graph=nx.Graph()
+        graph.add_node('A',tipo_no='PAC_MV',x=-51,y=-30)
+        graph.add_node('B',tipo_no='PAC_MV',x=-51.001,y=-30.001)
+        graph.add_edge('A','B',tipo='MV_Line',COD_ID='LINE_1',pf_p_kw=10,pf_q_kvar=3,pf_current_a=1,pf_losses_kw=.1,pf_losses_kvar=.05)
+        with tempfile.TemporaryDirectory() as root:
+            output=Path(root)/'network.geojson'
+            output.write_text(json.dumps({'type':'FeatureCollection','features':[{'type':'Feature','properties':{'tipo':'SSDMT','COD_ID':'LINE_1'},'geometry':{'type':'LineString','coordinates':[[-51,-30],[-51.001,-30.001]]}}]}),encoding='utf-8')
+            append_consumer_visuals(output,graph,'F1','EPSG:4326')
+            props=json.loads(output.read_text(encoding='utf-8'))['features'][0]['properties']
+        self.assertEqual(props['pf_p_kw'],'10')

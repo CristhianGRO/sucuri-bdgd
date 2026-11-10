@@ -412,6 +412,7 @@ def consumer_anchor_features(graph, coordinates, ctmt, profile_index=None):
                 'anchor_pac': str(anchor_node),
                 'position_estimated': approximate,
                 **consumer_payload(rows, profile_index, include_details=True),
+                **{field: values[field] for field in ('voltage_a_pu', 'voltage_b_pu', 'voltage_c_pu', 'voltage_avg_pu', 'voltage_min_pu', 'voltage_base_kv') if field in values},
             },
             'geometry': {'type': 'Point', 'coordinates': coordinate},
         })
@@ -451,7 +452,7 @@ def graph_geojson(graph, ctmt, crs, profile_index=None):
             missing += 1
     for u,v,d in graph.edges(data=True):
         if u in coordinates and v in coordinates:
-            features.append({'type':'Feature','properties':{**props('',d),'CTMT':ctmt,'COD_ID':str(d.get('id',str(u)+'_'+str(v))),'geometria':'Ligação reta entre nós; não é o traçado original'},'geometry':{'type':'LineString','coordinates':[coordinates[u],coordinates[v]]}})
+            features.append({'type':'Feature','properties':{**props('',d),'CTMT':ctmt,'COD_ID':str(d.get('COD_ID',d.get('id',str(u)+'_'+str(v)))),'geometria':'Ligação reta entre nós; não é o traçado original'},'geometry':{'type':'LineString','coordinates':[coordinates[u],coordinates[v]]}})
     features.extend(consumer_anchor_features(graph, coordinates, ctmt, profile_index))
     return {'type':'FeatureCollection','features':features}, missing
 
@@ -472,6 +473,10 @@ def append_consumer_visuals(path, graph, ctmt, crs, profile_index=None):
     ]
     summaries = transformer_consumer_summaries(graph, profile_index)
     document = json.loads(Path(path).read_text(encoding='utf-8'))
+    node_flow_fields = ('voltage_a_pu', 'voltage_b_pu', 'voltage_c_pu', 'voltage_avg_pu', 'voltage_min_pu', 'voltage_base_kv')
+    edge_flow_fields = ('pf_p_kw', 'pf_q_kvar', 'pf_current_a', 'pf_losses_kw', 'pf_losses_kvar')
+    node_flow = {str(feature['properties'].get('COD_ID')): feature['properties'] for feature in graph_nodes}
+    edge_flow = {str(feature['properties'].get('COD_ID')): feature['properties'] for feature in generated['features'] if feature['geometry'].get('type') == 'LineString'}
     existing_pacs = set()
     for feature in document['features']:
         props = feature.get('properties') or {}
@@ -482,6 +487,14 @@ def append_consumer_visuals(path, graph, ctmt, crs, profile_index=None):
         summary = summaries.get(_clean_id(props.get('PAC_2')))
         if summary and str(props.get('tipo') or '').upper().split('.')[-1] == 'UNTRMT':
             props['consumer_summary'] = summary
+        for key in ('PAC', 'PAC_1', 'PAC_2', 'COD_ID'):
+            source = node_flow.get(str(props.get(key)))
+            if source:
+                props.update({field: source[field] for field in node_flow_fields if field in source})
+                break
+        source = edge_flow.get(str(props.get('COD_ID')))
+        if source:
+            props.update({field: source[field] for field in edge_flow_fields if field in source})
     # Evita duplicar os transformadores/chaves que já têm geometria original,
     # mas mantém todas as barras calculadas que o recorte GIS não contém.
     for feature in graph_nodes:
@@ -516,6 +529,12 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
             result = ctrl.run_feeder_process(dataset.name, ctmt, '', True, 'Modelo Completo', output_base=str(job / 'output'), strict=True)
             if not result:
                 raise ValueError('Motor não retornou um resultado')
+            powerflow = None
+            if args.get('run_powerflow'):
+                from core.powerflow import BackwardForwardSweep
+                log('Executando fluxo de potência trifásico por varredura direta/inversa')
+                powerflow = BackwardForwardSweep().solve(result['graph'])
+                log(f"Fluxo concluído: {powerflow['iterations']} iterações; Vmín={powerflow['min_voltage_pu']:.4f} pu; enlaces ignorados={powerflow['radial_links_ignored']}")
             profiles = consumer_profile_index(dataset / 'CRVCRG.csv')
             geo, missing = graph_geojson(result['graph'], ctmt, args.get('crs','EPSG:4326'), profiles)
             geometry_mode = 'Ligações retas do grafo'
@@ -534,7 +553,7 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
                 if not geo['features']:
                     raise ValueError('Rede sem coordenadas válidas; confira o CRS da base')
                 (job/'network.geojson').write_text(json.dumps(geo,ensure_ascii=False,allow_nan=False),encoding='utf-8')
-            summary = {'dataset':dataset.name,'feeder':ctmt,'nodes':result['graph'].number_of_nodes(),'edges':result['graph'].number_of_edges(),'nodes_without_coordinates':missing,'geometry':geometry_mode,'note':'Arquivos de entrada para fluxo de potência; não representam uma simulação executada. O motor legado ainda requer validação elétrica.'}
+            summary = {'dataset':dataset.name,'feeder':ctmt,'nodes':result['graph'].number_of_nodes(),'edges':result['graph'].number_of_edges(),'nodes_without_coordinates':missing,'geometry':geometry_mode,'powerflow':powerflow,'note':('Fluxo de potência trifásico por varredura direta/inversa.' if powerflow else 'Arquivos de entrada para fluxo de potência; simulação não executada.')}
             (job/'report.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
             with zipfile.ZipFile(job/'powerflow.zip','w',zipfile.ZIP_DEFLATED) as archive:
                 for path in Path(result['output']).rglob('*'):

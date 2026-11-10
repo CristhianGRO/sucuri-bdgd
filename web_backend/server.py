@@ -83,11 +83,14 @@ class Service:
             raise ValueError('Alimentador não pertence à base selecionada')
         from pyproj import CRS
         crs = CRS.from_user_input(args.get('crs','EPSG:4326')).to_string()
-        return {'dataset':dataset,'feeder':feeder,'crs':crs}
+        run_powerflow = args.get('run_powerflow', False)
+        if not isinstance(run_powerflow, bool):
+            raise ValueError('run_powerflow deve ser booleano')
+        return {'dataset':dataset,'feeder':feeder,'crs':crs,'run_powerflow':run_powerflow}
 
     def cache_status(self, args):
         args = self.process_arguments(args)
-        key = fingerprint(self.dataset_path(args['dataset']),args['feeder'],args['crs'])
+        key = fingerprint(self.dataset_path(args['dataset']),args['feeder'],args['crs'],'powerflow' if args['run_powerflow'] else 'network')
         saved = find_cached(self.jobs_root,key)
         return {'available':bool(saved),'id':saved['id'] if saved else None,'completed_at':saved.get('completed_at') if saved else None}
 
@@ -100,7 +103,7 @@ class Service:
         if kind == 'process':
             args = self.process_arguments(args)
             input_root = self.dataset_path(args['dataset']).parent
-            key = fingerprint(self.dataset_path(args['dataset']),args['feeder'],args['crs'])
+            key = fingerprint(self.dataset_path(args['dataset']),args['feeder'],args['crs'],'powerflow' if args['run_powerflow'] else 'network')
             args['_cache_key'] = key
         else:
             args = {'item_id':args['item_id']}

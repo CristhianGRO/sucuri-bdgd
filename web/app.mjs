@@ -6,27 +6,30 @@ import {detailData} from './lod.mjs';
 import {filterLegend} from './legend_filter.mjs';
 const $=id=>document.getElementById(id);
 function status(message){$('status').textContent=message;}
+$('analysis-powerflow').disabled=false;
 if(!window.L){status('Não foi possível carregar o mapa. Verifique a conexão e recarregue a página.');throw Error('Leaflet unavailable');}
 const map=L.map('map',{preferCanvas:true,renderer:L.canvas({tolerance:7})}).setView([-22.91,-47.07],13);
 const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · <a href="https://www.openstreetmap.org/fixthemap">Corrigir mapa</a>',maxZoom:19}).addTo(map).on('tileerror',()=>status('Fundo indisponível. Os elementos da rede continuam acessíveis.'));
 $('basemap').onchange=()=>{const mode=$('basemap').value;$('map').classList.toggle('light-map',mode==='light');if(mode==='none')map.removeLayer(tiles);else if(!map.hasLayer(tiles))tiles.addTo(map);};
-window.addEventListener('sucuri-network',event=>{try{load(event.detail.data,event.detail.label,{dataset:event.detail.dataset,add:event.detail.add,download:event.detail.download});}catch(error){status(error.message);}});
+window.addEventListener('sucuri-network',event=>{try{powerFlowVisible=Boolean(event.detail.powerflow);load(event.detail.data,event.detail.label,{dataset:event.detail.dataset,add:event.detail.add,download:event.detail.download});if(event.detail.powerflow)status(`Fluxo concluído em ${event.detail.powerflow.iterations} iterações · Vmín ${event.detail.powerflow.min_voltage_pu.toLocaleString('pt-BR',{maximumFractionDigits:4})} pu`);}catch(error){status(error.message);}});
 L.control.scale({imperial:false}).addTo(map);
 let data, layer;
 const networks=new NetworkCollection();
 const enabledCategories=new Set(Object.keys(categories));
 let selectedFeatureKey='';
+let powerFlowVisible=false;
 let demoActive=false, redrawTimer;
 map.on('moveend',()=>{if(!layer)return;clearTimeout(redrawTimer);redrawTimer=setTimeout(()=>draw(),80);});
 function attributes(f){
   const container=document.createElement('div'),heading=document.createElement('strong');
   heading.textContent=categories[category(f)].label;container.append(heading);
   const dl=document.createElement('dl');
-  const visual=['consumer_summary','consumer_count','consumer_classes','consumers','consumer_list_truncated','installed_load_kw','energy_monthly_kwh','energy_annual_kwh','dic_monthly_mean','fic_monthly_mean','typical_profiles'];
+  const visual=['consumer_summary','consumer_count','consumer_classes','consumers','consumer_list_truncated','installed_load_kw','energy_monthly_kwh','energy_annual_kwh','dic_monthly_mean','fic_monthly_mean','typical_profiles','voltage_a_pu','voltage_b_pu','voltage_c_pu','voltage_avg_pu','voltage_min_pu','voltage_base_kv','pf_p_kw','pf_q_kvar','pf_current_a','pf_losses_kw','pf_losses_kvar'];
   for(const k of [...new Set(['COD_ID','PAC','CTMT','tipo_no','tipo','CLAS_SUB','FAS_CON',...Object.keys(f.properties)])].filter(k=>k in f.properties&&!visual.includes(k))){const v=f.properties[k],dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=k;dd.textContent=typeof v==='object'?JSON.stringify(v):String(v);dl.append(dt,dd);}
   container.append(dl);
   if(f.properties.consumer_summary)container.append(consumerPanel(f.properties.consumer_summary,'Consumidores atendidos pelo transformador'));
   if(f.properties.consumer_count)container.append(consumerPanel(f.properties,'Consumidores ligados nesta barra',true));
+  if(f.properties.voltage_avg_pu!=null||f.properties.pf_p_kw!=null){const flow=document.createElement('section');flow.className='flow-panel';const title=document.createElement('strong');title.textContent='Fluxo de potência';flow.append(title);const lines=[];if(f.properties.voltage_avg_pu!=null)lines.push(`Tensões A/B/C: ${[f.properties.voltage_a_pu,f.properties.voltage_b_pu,f.properties.voltage_c_pu].map(value=>numeric(value).toFixed(4)).join(' / ')} pu`);if(f.properties.voltage_min_pu!=null)lines.push(`Tensão mínima: ${numeric(f.properties.voltage_min_pu).toFixed(4)} pu`);if(f.properties.pf_p_kw!=null)lines.push(`P: ${numeric(f.properties.pf_p_kw).toFixed(2)} kW · Q: ${numeric(f.properties.pf_q_kvar).toFixed(2)} kvar`);if(f.properties.pf_current_a!=null)lines.push(`Corrente máxima: ${numeric(f.properties.pf_current_a).toFixed(2)} A`);if(f.properties.pf_losses_kw!=null)lines.push(`Perdas: ${numeric(f.properties.pf_losses_kw).toFixed(3)} kW · ${numeric(f.properties.pf_losses_kvar).toFixed(3)} kvar`);for(const line of lines){const row=document.createElement('p');row.textContent=line;flow.append(row);}container.append(flow);}
   return container;
 }
 function consumerColor(name){return categories[consumerClass({CLAS_SUB:name})].color;}
@@ -82,6 +85,8 @@ function consumerPanel(payload,title,showList=false){
 }
 function featureKey(f){return JSON.stringify([f._sucuri_dataset??'',feederOf(f),f.properties?.COD_ID??'',f.properties?.tipo_no??f.properties?.tipo??'',f.geometry?.type,f.geometry?.coordinates]);}
 function isSelected(f){return featureKey(f)===selectedFeatureKey;}
+function voltageColor(value){const fraction=Math.min(1,Math.max(0,(numeric(value)-.7)/.5)),hue=130*(1-fraction);return `hsl(${hue} 78% 48%)`;}
+function hasPowerflow(f){return f.properties?.voltage_avg_pu!=null;}
 function style(f){const active=!$('feeder').value || feederOf(f)===$('feeder').value,selected=isSelected(f),key=category(f);return {color:selected?'#ffffff':categories[key].color,weight:f.geometry.type==='Point'?(selected?3:1):(selected?5:(active?2:1)),opacity:active?1:.16,fillOpacity:selected?1:(active?.85:.16),radius:selected?Math.max(map.getZoom()>=16?7:6,6):(map.getZoom()>=16?5:3.5)};}
 function consumerAnchorIcon(f){
   const consumers=(f.properties.consumers??[]).slice(0,24),count=Number(f.properties.consumer_count??consumers.length),dots=consumers.map((consumer,index)=>{const angle=Math.round(index/Math.max(consumers.length,1)*360),radius=24+(index%3)*7;return `<i class="consumer-dot" style="--consumer-angle:${angle}deg;--consumer-radius:${radius}px;background:${consumerColor(consumer.class)}"></i>`;}).join('');
@@ -95,6 +100,7 @@ function consumerClusterIcon(f){
 }
 function pointLayer(f,ll){
   const key=category(f);
+  if(powerFlowVisible&&hasPowerflow(f))return L.circleMarker(ll,{...style(f),color:voltageColor(f.properties.voltage_avg_pu),fillColor:voltageColor(f.properties.voltage_avg_pu),weight:isSelected(f)?3:0,fillOpacity:.62,radius:isSelected(f)?30:22});
   if(String(f.properties.tipo||'').toUpperCase()==='CONSUMERCLUSTER')return L.marker(ll,{icon:consumerClusterIcon(f),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:`${f.properties.consumer_count} consumidores nesta região`,riseOnHover:true,riseOffset:1100});
   if(key==='consumers')return L.marker(ll,{icon:consumerAnchorIcon(f),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:`${f.properties.consumer_count} consumidores conectados`,riseOnHover:true,riseOffset:1100});
   if(['res','com','ind','load','transformer','substation'].includes(key)){
@@ -176,6 +182,8 @@ function load(next,label,{dataset='Arquivo',add=false,download=null,demo=false}=
   refreshNetworks();
   status('Rede carregada. Use a lista para mostrar, ocultar ou remover alimentadores.');
 }
+function activeNetwork(){const key=$('feeder').value;return key?networks.items.get(key):[...networks.items.values()].find(item=>item.visible);}
+$('analysis-powerflow').onclick=()=>{const item=activeNetwork();if(!item){status('Carregue e selecione uma rede antes de executar o fluxo de potência.');return;}if(data?.features.some(hasPowerflow)){powerFlowVisible=!powerFlowVisible;$('analysis-powerflow').classList.toggle('active',powerFlowVisible);status(powerFlowVisible?'Mapa de calor de tensões ativo.':'Mapa de calor de tensões oculto.');draw();return;}window.dispatchEvent(new CustomEvent('sucuri-run-powerflow',{detail:{dataset:item.dataset,feeder:item.feeder}}));};
 $('feeder').onchange=()=>{$('details').textContent='Clique em um elemento para inspecionar seus atributos.';draw(true);};
 $('isolate').onchange=()=>draw();$('fit').onclick=zoom;
 $('clear').onclick=()=>{$('feeder').value='';$('details').textContent='Seleção limpa.';draw();};
