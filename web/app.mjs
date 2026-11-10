@@ -3,6 +3,7 @@ import {categories,category,consumerClass,symbolSVG} from './symbology.mjs';
 import {validate,toKML,demoData} from './model.mjs';
 import {NetworkCollection,mapFeederOf as feederOf,selectMapFeeder as selected,visibleSelection} from './networks.mjs';
 import {detailData} from './lod.mjs';
+import {filterLegend} from './legend_filter.mjs';
 const $=id=>document.getElementById(id);
 function status(message){$('status').textContent=message;}
 if(!window.L){status('Não foi possível carregar o mapa. Verifique a conexão e recarregue a página.');throw Error('Leaflet unavailable');}
@@ -11,8 +12,9 @@ const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attrib
 $('basemap').onchange=()=>{const mode=$('basemap').value;$('map').classList.toggle('light-map',mode==='light');if(mode==='none')map.removeLayer(tiles);else if(!map.hasLayer(tiles))tiles.addTo(map);};
 window.addEventListener('sucuri-network',event=>{try{load(event.detail.data,event.detail.label,{dataset:event.detail.dataset,add:event.detail.add,download:event.detail.download});}catch(error){status(error.message);}});
 L.control.scale({imperial:false}).addTo(map);
-let data, layer, showConsumers=false;
+let data, layer;
 const networks=new NetworkCollection();
+const enabledCategories=new Set(Object.keys(categories));
 let demoActive=false, redrawTimer;
 map.on('moveend',()=>{if(!layer)return;clearTimeout(redrawTimer);redrawTimer=setTimeout(()=>draw(),80);});
 function attributes(f){
@@ -40,13 +42,13 @@ function consumerPanel(payload,title,showList=false){
 function style(f){const active=!$('feeder').value || feederOf(f)===$('feeder').value;return {color:categories[category(f)].color,weight:f.geometry.type==='Point'?1:(active?2:1),opacity:active?1:.16,fillOpacity:active?.85:.16,radius:map.getZoom()>=16?5:3.5};}
 function consumerAnchorIcon(f){
   const consumers=(f.properties.consumers??[]).slice(0,24),count=Number(f.properties.consumer_count??consumers.length),dots=consumers.map((consumer,index)=>{const angle=Math.round(index/Math.max(consumers.length,1)*360),radius=24+(index%3)*7;return `<i class="consumer-dot" style="--consumer-angle:${angle}deg;--consumer-radius:${radius}px;background:${consumerColor(consumer.class)}"></i>`;}).join('');
-  return L.divIcon({className:'consumer-anchor-marker',html:`<div class="consumer-anchor${showConsumers?' is-pinned':''}" aria-label="${count} consumidores conectados"><span class="consumer-hand">${dots}</span><span class="consumer-badge">${count}</span></div>`,iconSize:[116,116],iconAnchor:[58,58]});
+  return L.divIcon({className:'consumer-anchor-marker',html:`<div class="consumer-anchor is-pinned" aria-label="${count} consumidores conectados"><span class="consumer-hand">${dots}</span><span class="consumer-badge">${count}</span></div>`,iconSize:[116,116],iconAnchor:[58,58]});
 }
 function consumerClusterIcon(f){
   const count=Number(f.properties.consumer_count??0),classes=Object.entries(f.properties.consumer_classes??{}),total=Math.max(count,1);let progress=0;
   const slices=classes.map(([name,value])=>{const start=progress;progress+=Number(value)/total*100;return `${consumerColor(name)} ${start}% ${progress}%`;});
   const background=slices.length?`conic-gradient(${slices.join(',')})`:'#d7dde2';
-  return L.divIcon({className:'consumer-cluster-marker',html:`<div class="consumer-cluster${showConsumers?' is-pinned':''}" aria-label="${count} consumidores na região" style="--consumer-cluster:${background}"><span>${count}</span></div>`,iconSize:[46,46],iconAnchor:[23,23]});
+  return L.divIcon({className:'consumer-cluster-marker',html:`<div class="consumer-cluster is-pinned" aria-label="${count} consumidores na região" style="--consumer-cluster:${background}"><span>${count}</span></div>`,iconSize:[46,46],iconAnchor:[23,23]});
 }
 function pointLayer(f,ll){
   const key=category(f);
@@ -62,20 +64,23 @@ legend.onAdd=()=>{
   const box=L.DomUtil.create('details','network-legend');box.open=!window.matchMedia('(max-width:760px)').matches;
   const title=document.createElement('summary');title.textContent='Legenda';box.append(title);
   for(const [key,value] of Object.entries(categories)){
-    const row=document.createElement('div');row.className='legend-row';
+    const row=document.createElement('button');row.type='button';row.className='legend-row';
     const icon=document.createElement('span');icon.innerHTML=symbolSVG(key);
     const label=document.createElement('span');label.textContent=value.label;
-    row.append(icon,label);box.append(row);
+    row.append(icon,label);row.title=`Clique para ${enabledCategories.has(key)?'ocultar':'mostrar'} ${value.label}`;
+    row.setAttribute('aria-pressed',String(enabledCategories.has(key)));
+    if(!enabledCategories.has(key))row.classList.add('is-hidden');
+    row.onclick=()=>{if(enabledCategories.has(key))enabledCategories.delete(key);else enabledCategories.add(key);draw();};
+    box.append(row);
   }
   L.DomEvent.disableClickPropagation(box);L.DomEvent.disableScrollPropagation(box);return box;
 };legend.addTo(map);
-const consumerControl=L.control({position:'topleft'});
-consumerControl.onAdd=()=>{const box=L.DomUtil.create('label','consumer-control'),check=document.createElement('input'),text=document.createElement('span');check.type='checkbox';check.checked=showConsumers;text.textContent=' Mostrar consumidores';check.onchange=()=>{showConsumers=check.checked;draw();};box.append(check,text);L.DomEvent.disableClickPropagation(box);L.DomEvent.disableScrollPropagation(box);return box;};consumerControl.addTo(map);
 function draw(fit=false){
   if(layer) map.removeLayer(layer);
   const id=$('feeder').value;
   const visible=id&&$('isolate').checked?selected(data,id):data;
-  const bounds=map.getBounds().pad(.18),renderable=detailData(visible,map.getZoom(),{west:bounds.getWest(),east:bounds.getEast(),south:bounds.getSouth(),north:bounds.getNorth()});
+  const filtered=filterLegend(visible,enabledCategories);
+  const bounds=map.getBounds().pad(.18),renderable=detailData(filtered,map.getZoom(),{west:bounds.getWest(),east:bounds.getEast(),south:bounds.getSouth(),north:bounds.getNorth()});
   layer=L.geoJSON(renderable,{style,pointToLayer:pointLayer,onEachFeature:(f,l)=>{
     const info=attributes(f),hint=document.createElement('p');
     hint.className='tooltip-hint';hint.textContent='Clique para fixar os detalhes no painel.';info.insertBefore(hint,info.children[1]);
