@@ -19,6 +19,7 @@ const enabledCategories=new Set(Object.keys(categories));
 let selectedFeatureKey='';
 let powerFlowVisible=false;
 let heatLayer;
+let voltageHeatScale;
 let demoActive=false, redrawTimer;
 map.on('moveend',()=>{if(!layer)return;clearTimeout(redrawTimer);redrawTimer=setTimeout(()=>draw(),80);});
 function attributes(f){
@@ -94,20 +95,34 @@ function heatColor(value){
   const ratio=(target-left[0])/(right[0]-left[0]||1),rgb=left[1].map((channel,index)=>Math.round(channel+(right[1][index]-channel)*ratio));
   return `rgb(${rgb.join(',')})`;
 }
+function voltageScale(values){
+  const minimum=Math.min(...values),maximum=Math.max(...values),span=Math.max(maximum-minimum,.01),low=Math.max(.5,minimum-span*.05),high=Math.min(1.5,maximum+span*.05);
+  return {low,mid:(low+high)/2,high,intensity:value=>(value-low)/(high-low||1)};
+}
+function updateVoltageScale(scale){
+  if(!voltageHeatScale){
+    voltageHeatScale=L.control({position:'bottomleft'});voltageHeatScale.onAdd=()=>{const box=L.DomUtil.create('div','voltage-heat-scale');box.style.cssText='background:rgba(18,29,33,.94);color:#eef5f5;border:1px solid #46606a;border-radius:5px;padding:7px 9px;font:12px system-ui;min-width:190px;box-shadow:0 1px 7px #0008';L.DomEvent.disableClickPropagation(box);return box;};voltageHeatScale.addTo(map);
+  }
+  const box=voltageHeatScale.getContainer();if(!scale){box.hidden=true;return;}box.hidden=false;
+  box.innerHTML=`<strong style="display:block;margin-bottom:5px">Tensão média (p.u.)</strong><div style="height:10px;border-radius:3px;background:linear-gradient(90deg,#2ccf7b,#cde95d,#ffd34d,#ff863f,#e93e45)"></div><div style="display:flex;justify-content:space-between;margin-top:4px"><span>${scale.low.toFixed(3)}</span><span>${scale.mid.toFixed(3)}</span><span>${scale.high.toFixed(3)}</span></div>`;
+}
 class VoltageHeatLayer extends L.Layer{
   constructor(points){super();this.points=points;}
   onAdd(map){
     this.map=map;this.canvas=L.DomUtil.create('canvas','voltage-heat-layer',map.getPane('voltageHeatPane'));
-    this.canvas.style.pointerEvents='none';this.redraw=this.redraw.bind(this);map.on('moveend zoomend resize',this.redraw);this.redraw();
+    this.canvas.style.pointerEvents='none';this.redraw=this.redraw.bind(this);map.on('moveend zoomend resize viewreset',this.redraw);this.redraw();
   }
-  onRemove(map){map.off('moveend zoomend resize',this.redraw);this.canvas?.remove();this.canvas=null;}
+  onRemove(map){map.off('moveend zoomend resize viewreset',this.redraw);this.canvas?.remove();this.canvas=null;}
   redraw(){
     if(!this.canvas)return;const size=this.map.getSize(),pixelRatio=Math.min(window.devicePixelRatio||1,2);
     this.canvas.width=size.x*pixelRatio;this.canvas.height=size.y*pixelRatio;this.canvas.style.width=`${size.x}px`;this.canvas.style.height=`${size.y}px`;
-    const context=this.canvas.getContext('2d');context.scale(pixelRatio,pixelRatio);const radius=this.map.getZoom()>=16?95:68;
+    const context=this.canvas.getContext('2d');context.scale(pixelRatio,pixelRatio);const zoom=this.map.getZoom(),radius=zoom>=16?70:zoom>=14?48:32,cell=radius*.8,bins=new Map();
     for(const point of this.points){const position=this.map.latLngToContainerPoint([point.latitude,point.longitude]);if(position.x<-radius||position.y<-radius||position.x>size.x+radius||position.y>size.y+radius)continue;
-      const gradient=context.createRadialGradient(position.x,position.y,0,position.x,position.y,radius);const color=heatColor(point.intensity);
-      gradient.addColorStop(0,color.replace('rgb(','rgba(').replace(')',',0.30)'));gradient.addColorStop(.32,color.replace('rgb(','rgba(').replace(')',',0.16)'));gradient.addColorStop(1,color.replace('rgb(','rgba(').replace(')',',0)'));
+      const key=`${Math.floor(position.x/cell)}:${Math.floor(position.y/cell)}`,bin=bins.get(key)??{x:0,y:0,intensity:0,count:0};bin.x+=position.x;bin.y+=position.y;bin.intensity+=point.intensity;bin.count++;bins.set(key,bin);
+    }
+    for(const bin of bins.values()){const position={x:bin.x/bin.count,y:bin.y/bin.count},intensity=bin.intensity/bin.count;
+      const gradient=context.createRadialGradient(position.x,position.y,0,position.x,position.y,radius),color=heatColor(intensity);
+      gradient.addColorStop(0,color.replace('rgb(','rgba(').replace(')',',0.24)'));gradient.addColorStop(.32,color.replace('rgb(','rgba(').replace(')',',0.11)'));gradient.addColorStop(1,color.replace('rgb(','rgba(').replace(')',',0)'));
       context.fillStyle=gradient;context.beginPath();context.arc(position.x,position.y,radius,0,Math.PI*2);context.fill();
     }
   }
@@ -115,9 +130,11 @@ class VoltageHeatLayer extends L.Layer{
 map.createPane('voltageHeatPane');map.getPane('voltageHeatPane').style.zIndex=350;
 function updateHeatmap(){
   if(heatLayer){map.removeLayer(heatLayer);heatLayer=null;}
-  if(!powerFlowVisible||!data)return;
-  const points=data.features.filter(feature=>feature.geometry?.type==='Point'&&hasPowerflow(feature)).map(feature=>{const [longitude,latitude]=feature.geometry.coordinates;return {latitude,longitude,intensity:Math.min(1,Math.max(.08,(numeric(feature.properties.voltage_avg_pu)-.7)/.5))};});
-  if(!points.length)return;
+  if(!powerFlowVisible||!data){updateVoltageScale(null);return;}
+  const rawPoints=data.features.filter(feature=>feature.geometry?.type==='Point'&&hasPowerflow(feature)).map(feature=>{const [longitude,latitude]=feature.geometry.coordinates;return {latitude,longitude,voltage:numeric(feature.properties.voltage_avg_pu)};});
+  if(!rawPoints.length){updateVoltageScale(null);return;}
+  const scale=voltageScale(rawPoints.map(point=>point.voltage)),points=rawPoints.map(point=>({...point,intensity:Math.min(1,Math.max(0,scale.intensity(point.voltage)))}));
+  updateVoltageScale(scale);
   heatLayer=new VoltageHeatLayer(points).addTo(map);
 }
 function style(f){const active=!$('feeder').value || feederOf(f)===$('feeder').value,selected=isSelected(f),key=category(f);return {color:selected?'#ffffff':categories[key].color,weight:f.geometry.type==='Point'?(selected?3:1):(selected?5:(active?2:1)),opacity:active?1:.16,fillOpacity:selected?1:(active?.85:.16),radius:selected?Math.max(map.getZoom()>=16?7:6,6):(map.getZoom()>=16?5:3.5)};}
