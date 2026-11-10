@@ -208,25 +208,98 @@ def _consumer_rows(values):
     return [row] if isinstance(row, dict) else []
 
 
-def consumer_payload(rows, limit=200):
-    """Produz dados de visualização, sem expor o registro completo da UC."""
+def _number(value):
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def consumer_profile_index(path):
+    """Lê as curvas CRVCRG uma vez e as indexa por TIP_CC e tipo de dia."""
+    profiles = {}
+    path = Path(path)
+    if not path.exists():
+        return profiles
+    with path.open(encoding='utf-8', newline='') as source:
+        for row in csv.DictReader(source):
+            code = _clean_id(row.get('COD_ID'))
+            values = [_number(row.get(f'POT_{index:02d}')) for index in range(1, 97)]
+            if not code or not any(value is not None for value in values):
+                continue
+            profiles.setdefault(code, []).append({
+                'day': str(row.get('TIP_DIA') or 'Típico').strip() or 'Típico',
+                'points': [value or 0 for value in values],
+            })
+    return profiles
+
+
+def consumer_profile_summary(rows, profile_index):
+    """Média dos perfis típicos, normalizada em percentual do pico."""
+    grouped = {}
+    for row in rows:
+        for profile in profile_index.get(_clean_id(row.get('TIP_CC')), []):
+            item = grouped.setdefault(profile['day'], {'totals': [0] * 96, 'count': 0})
+            item['totals'] = [left + right for left, right in zip(item['totals'], profile['points'])]
+            item['count'] += 1
+    result = []
+    for day, item in sorted(grouped.items()):
+        average = [value / item['count'] for value in item['totals']]
+        peak = max(average, default=0)
+        if peak:
+            average = [round(value / peak * 100, 1) for value in average]
+        result.append({'day': day, 'points': average, 'profiles': item['count']})
+    return result
+
+
+def consumer_payload(rows, profile_index=None, limit=200):
+    """Produz indicadores agregados de UCs, sem expor seu registro completo."""
     classes = {}
     consumers = []
+    energy = [0] * 12
+    capacities = []
+    dic = []
+    fic = []
     for row in rows:
         consumer_class = str(row.get('CLAS_SUB') or 'Não informado').strip() or 'Não informado'
         classes[consumer_class] = classes.get(consumer_class, 0) + 1
+        capacity = _number(row.get('CAR_INST'))
+        if capacity is not None:
+            capacities.append(capacity)
+        for index in range(1, 13):
+            energy[index - 1] += _number(row.get(f'ENE_{index:02d}')) or 0
+            value = _number(row.get(f'DIC_{index:02d}'))
+            if value is not None:
+                dic.append(value)
+            value = _number(row.get(f'FIC_{index:02d}'))
+            if value is not None:
+                fic.append(value)
         if len(consumers) < limit:
             consumer_id = str(row.get('COD_ID') or row.get('NUM_UC') or row.get('CEG') or '').strip()
             consumers.append({'id': consumer_id or 'Sem identificador', 'class': consumer_class})
-    return {
+    result = {
         'consumer_count': len(rows),
         'consumer_classes': classes,
         'consumers': consumers,
         'consumer_list_truncated': len(rows) > len(consumers),
     }
+    if capacities:
+        result['installed_load_kw'] = round(sum(capacities), 2)
+    if any(energy):
+        result['energy_monthly_kwh'] = [round(value, 2) for value in energy]
+        result['energy_annual_kwh'] = round(sum(energy), 2)
+    if dic:
+        result['dic_monthly_mean'] = round(sum(dic) / len(dic), 2)
+    if fic:
+        result['fic_monthly_mean'] = round(sum(fic) / len(fic), 2)
+    profiles = consumer_profile_summary(rows, profile_index or {})
+    if profiles:
+        result['typical_profiles'] = profiles
+    return result
 
 
-def transformer_consumer_summaries(graph):
+def transformer_consumer_summaries(graph, profile_index=None):
     """Agrega as UCs alcançáveis pela rede BT de cada transformador."""
     summaries = {}
     low_voltage_edges = {'SSDBT', 'RAMLIG'}
@@ -247,7 +320,7 @@ def transformer_consumer_summaries(graph):
                 seen.add(neighbor)
                 queue.append(neighbor)
         if rows:
-            summaries[_clean_id(secondary)] = consumer_payload(rows)
+            summaries[_clean_id(secondary)] = consumer_payload(rows, profile_index)
     return summaries
 
 
@@ -282,7 +355,7 @@ def _spread_coordinate(coordinate, node):
     return [longitude, latitude]
 
 
-def consumer_anchor_features(graph, coordinates, ctmt):
+def consumer_anchor_features(graph, coordinates, ctmt, profile_index=None):
     """Cria pontos de visualização nas barras que concentram UCs sem geometria."""
     features = []
     for node, values in graph.nodes(data=True):
@@ -307,20 +380,20 @@ def consumer_anchor_features(graph, coordinates, ctmt):
                 'tipo': 'ConsumerAnchor',
                 'anchor_pac': str(anchor_node),
                 'position_estimated': approximate,
-                **consumer_payload(rows),
+                **consumer_payload(rows, profile_index),
             },
             'geometry': {'type': 'Point', 'coordinates': coordinate},
         })
     return features
 
 
-def graph_geojson(graph, ctmt, crs):
+def graph_geojson(graph, ctmt, crs, profile_index=None):
     from pyproj import Transformer
     transformer = Transformer.from_crs(crs, 'EPSG:4326', always_xy=True)
     coordinates = {}
     features = []
     missing = 0
-    summaries = transformer_consumer_summaries(graph)
+    summaries = transformer_consumer_summaries(graph, profile_index)
     def props(node, values):
         result = {k: str(v) for k,v in values.items() if not k.startswith('_') and k not in ('ucbt_row','ucbt_rows','trafo_row')}
         consumer = values.get('ucbt_row')
@@ -331,7 +404,7 @@ def graph_geojson(graph, ctmt, crs):
                     result[key] = str(value)
         rows = _consumer_rows(values)
         if rows:
-            result.update(consumer_payload(rows))
+            result.update(consumer_payload(rows, profile_index))
         summary = summaries.get(_clean_id(node))
         if summary:
             result['consumer_summary'] = summary
@@ -348,25 +421,25 @@ def graph_geojson(graph, ctmt, crs):
     for u,v,d in graph.edges(data=True):
         if u in coordinates and v in coordinates:
             features.append({'type':'Feature','properties':{**props('',d),'CTMT':ctmt,'COD_ID':str(d.get('id',str(u)+'_'+str(v))),'geometria':'Ligação reta entre nós; não é o traçado original'},'geometry':{'type':'LineString','coordinates':[coordinates[u],coordinates[v]]}})
-    features.extend(consumer_anchor_features(graph, coordinates, ctmt))
+    features.extend(consumer_anchor_features(graph, coordinates, ctmt, profile_index))
     return {'type':'FeatureCollection','features':features}, missing
 
 
-def append_consumer_visuals(path, graph, ctmt, crs):
+def append_consumer_visuals(path, graph, ctmt, crs, profile_index=None):
     """Acrescenta nós topológicos, âncoras de UCs e resumos à BDGD.
 
     O recorte GIS preserva os traçados reais, mas nem todas as barras são
     feições espaciais exportáveis. Os pontos gerados pelo grafo completam a
     leitura elétrica: subestação, nós MT e barras BT, inclusive onde há UCs.
     """
-    generated, _ = graph_geojson(graph, ctmt, crs)
+    generated, _ = graph_geojson(graph, ctmt, crs, profile_index)
     anchors = [feature for feature in generated['features'] if feature['properties'].get('tipo') == 'ConsumerAnchor']
     graph_nodes = [
         feature for feature in generated['features']
         if feature['geometry'].get('type') == 'Point'
         and feature['properties'].get('tipo') != 'ConsumerAnchor'
     ]
-    summaries = transformer_consumer_summaries(graph)
+    summaries = transformer_consumer_summaries(graph, profile_index)
     document = json.loads(Path(path).read_text(encoding='utf-8'))
     existing_pacs = set()
     for feature in document['features']:
@@ -412,7 +485,8 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
             result = ctrl.run_feeder_process(dataset.name, ctmt, '', True, 'Modelo Completo', output_base=str(job / 'output'), strict=True)
             if not result:
                 raise ValueError('Motor não retornou um resultado')
-            geo, missing = graph_geojson(result['graph'], ctmt, args.get('crs','EPSG:4326'))
+            profiles = consumer_profile_index(dataset / 'CRVCRG.csv')
+            geo, missing = graph_geojson(result['graph'], ctmt, args.get('crs','EPSG:4326'), profiles)
             geometry_mode = 'Ligações retas do grafo'
             metadata = dataset / 'source.json'
             if metadata.exists():
@@ -423,7 +497,7 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
                 # geográfico, que exige CRS por camada.
                 layers = [v for k,v in source['layers'].items() if k in ('SSDMT','SSDBT','UNTRMT','UNSEMT','UNSEBT','RAMLIG')]
                 export(source['gdb'], job / 'network.geojson', layers, {ctmt})
-                append_consumer_visuals(job / 'network.geojson', result['graph'], ctmt, args.get('crs','EPSG:4326'))
+                append_consumer_visuals(job / 'network.geojson', result['graph'], ctmt, args.get('crs','EPSG:4326'), profiles)
                 geometry_mode = 'Geometrias originais BDGD (associação direta por CTMT)'
             else:
                 if not geo['features']:

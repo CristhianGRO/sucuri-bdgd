@@ -21,7 +21,7 @@ function attributes(f){
   const container=document.createElement('div'),heading=document.createElement('strong');
   heading.textContent=categories[category(f)].label;container.append(heading);
   const dl=document.createElement('dl');
-  const visual=['consumer_summary','consumer_count','consumer_classes','consumers','consumer_list_truncated'];
+  const visual=['consumer_summary','consumer_count','consumer_classes','consumers','consumer_list_truncated','installed_load_kw','energy_monthly_kwh','energy_annual_kwh','dic_monthly_mean','fic_monthly_mean','typical_profiles'];
   for(const k of [...new Set(['COD_ID','PAC','CTMT','tipo_no','tipo','CLAS_SUB','FAS_CON',...Object.keys(f.properties)])].filter(k=>k in f.properties&&!visual.includes(k))){const v=f.properties[k],dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=k;dd.textContent=typeof v==='object'?JSON.stringify(v):String(v);dl.append(dt,dd);}
   container.append(dl);
   if(f.properties.consumer_summary)container.append(consumerPanel(f.properties.consumer_summary,'Consumidores atendidos pelo transformador'));
@@ -29,6 +29,25 @@ function attributes(f){
   return container;
 }
 function consumerColor(name){return categories[consumerClass({CLAS_SUB:name})].color;}
+const months=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+function numeric(value){return Number(value)||0;}
+function energyChart(values){
+  const chart=document.createElement('section');chart.className='consumer-chart';
+  const title=document.createElement('span');title.textContent='Energia consumida por mês (kWh)';chart.append(title);
+  const max=Math.max(...values.map(numeric),1),width=300,height=112,barWidth=19;
+  const bars=values.map((value,index)=>{const amount=numeric(value),barHeight=Math.max(1,amount/max*72),x=8+index*24,y=82-barHeight;return `<g><title>${months[index]}: ${amount.toLocaleString('pt-BR',{maximumFractionDigits:1})} kWh</title><rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="2"/><text x="${x+barWidth/2}" y="98" text-anchor="middle">${months[index][0]}</text></g>`;}).join('');
+  chart.insertAdjacentHTML('beforeend',`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Energia mensal: passe o cursor sobre uma coluna para ver o valor"><path class="chart-axis" d="M6 82H298"/>${bars}</svg>`);
+  return chart;
+}
+function profileChart(profiles){
+  const chart=document.createElement('section');chart.className='consumer-chart consumer-profile';
+  const title=document.createElement('span');title.textContent='Perfil típico de carga (percentual do pico)';chart.append(title);
+  const choices=document.createElement('div');choices.className='profile-days';chart.append(choices);
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 300 112');svg.setAttribute('role','img');chart.append(svg);
+  const render=profile=>{const values=profile.points??[],points=values.map((value,index)=>`${8+index/Math.max(values.length-1,1)*284},${82-numeric(value)/100*72}`).join(' ');svg.innerHTML=`<path class="chart-axis" d="M6 82H298"/><polyline class="profile-line" points="${points}"/><text x="8" y="102">00h</text><text x="143" y="102">12h</text><text x="275" y="102">24h</text><title>${profile.day}: ${profile.profiles??0} curva(s) CRVCRG combinada(s)</title>`;};
+  profiles.forEach((profile,index)=>{const button=document.createElement('button');button.type='button';button.textContent=profile.day;button.className=index?'':'active';button.onclick=()=>{for(const item of choices.children)item.classList.remove('active');button.classList.add('active');render(profile);};choices.append(button);});
+  render(profiles[0]);return chart;
+}
 function consumerPanel(payload,title,showList=false){
   const box=document.createElement('section');box.className='consumer-panel';
   const heading=document.createElement('strong');heading.textContent=title;box.append(heading);
@@ -36,6 +55,14 @@ function consumerPanel(payload,title,showList=false){
   const total=Number(payload.consumer_count??classes.reduce((sum,[,count])=>sum+Number(count),0));
   if(classes.length){let progress=0;const slices=classes.map(([name,count])=>{const start=progress;progress+=Number(count)/total*100;return `${consumerColor(name)} ${start}% ${progress}%`;});const row=document.createElement('div');row.className='consumer-breakdown';const pie=document.createElement('span');pie.className='consumer-pie';pie.style.background=`conic-gradient(${slices.join(',')})`;pie.setAttribute('aria-label',`${total} consumidores`);const legend=document.createElement('ul');for(const [name,count] of classes){const item=document.createElement('li'),swatch=document.createElement('i');swatch.style.backgroundColor=consumerColor(name);item.append(swatch,document.createTextNode(`${name}: ${count}`));legend.append(item);}row.append(pie,legend);box.append(row);}
   else {const empty=document.createElement('p');empty.textContent='Nenhum consumidor classificado.';box.append(empty);}
+  const indicators=[];
+  if(payload.installed_load_kw!=null)indicators.push(`Carga instalada: ${numeric(payload.installed_load_kw).toLocaleString('pt-BR',{maximumFractionDigits:2})} kW`);
+  if(payload.energy_annual_kwh!=null)indicators.push(`Energia anual: ${numeric(payload.energy_annual_kwh).toLocaleString('pt-BR',{maximumFractionDigits:1})} kWh`);
+  if(payload.dic_monthly_mean!=null)indicators.push(`DIC médio mensal: ${numeric(payload.dic_monthly_mean).toLocaleString('pt-BR',{maximumFractionDigits:2})} h`);
+  if(payload.fic_monthly_mean!=null)indicators.push(`FIC médio mensal: ${numeric(payload.fic_monthly_mean).toLocaleString('pt-BR',{maximumFractionDigits:2})}`);
+  if(indicators.length){const metrics=document.createElement('div');metrics.className='consumer-metrics';for(const item of indicators){const metric=document.createElement('span');metric.textContent=item;metrics.append(metric);}box.append(metrics);}
+  if(Array.isArray(payload.energy_monthly_kwh)&&payload.energy_monthly_kwh.some(numeric))box.append(energyChart(payload.energy_monthly_kwh));
+  if(Array.isArray(payload.typical_profiles)&&payload.typical_profiles.length)box.append(profileChart(payload.typical_profiles));
   if(showList){const list=document.createElement('ul');list.className='consumer-tree';for(const consumer of (payload.consumers??[]).slice(0,30)){const item=document.createElement('li');item.textContent=`${consumer.id} · ${consumer.class}`;list.append(item);}if(payload.consumer_list_truncated){const item=document.createElement('li');item.textContent='… demais consumidores disponíveis no processamento';list.append(item);}box.append(list);}
   return box;
 }

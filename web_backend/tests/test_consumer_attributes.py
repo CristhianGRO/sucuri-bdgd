@@ -30,6 +30,22 @@ class ConsumerAttributes(TestCase):
         self.assertNotIn('CEP',props)
         self.assertEqual(missing,0)
 
+    def test_consumer_indicators_aggregate_energy_quality_and_profile(self):
+        graph=nx.Graph();graph.add_node('N1',tipo_no='PAC_LV',x=-51,y=-30,ucbt_rows=[
+            {'COD_ID':'UC-1','CLAS_SUB':'RE1','TIP_CC':'RES_A','CAR_INST':'4.5','ENE_01':'10','ENE_02':'20','DIC_01':'1.5','FIC_01':'2'},
+            {'COD_ID':'UC-2','CLAS_SUB':'RE1','TIP_CC':'RES_A','CAR_INST':'2','ENE_01':'15','ENE_02':'5','DIC_01':'2.5','FIC_01':'4'},
+        ])
+        profiles={'RES_A':[{'day':'DU','points':[1,2] + [0] * 94}]}
+        geo,_=graph_geojson(graph,'F1','EPSG:4326',profiles)
+        props=geo['features'][0]['properties']
+        self.assertEqual(props['installed_load_kw'],6.5)
+        self.assertEqual(props['energy_monthly_kwh'][:2],[25,25])
+        self.assertEqual(props['energy_annual_kwh'],50)
+        self.assertEqual(props['dic_monthly_mean'],2)
+        self.assertEqual(props['fic_monthly_mean'],3)
+        self.assertEqual(props['typical_profiles'][0]['day'],'DU')
+        self.assertEqual(props['typical_profiles'][0]['points'][:2],[50,100])
+
     def test_multiple_consumers_are_grouped_at_the_bus_and_transformer(self):
         graph=nx.Graph()
         graph.add_node('MT',tipo_no='PAC_MV',x=-51,y=-30)
