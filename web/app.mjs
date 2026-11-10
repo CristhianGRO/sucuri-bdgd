@@ -18,7 +18,7 @@ const networks=new NetworkCollection();
 const enabledCategories=new Set(Object.keys(categories));
 let selectedFeatureKey='';
 let powerFlowVisible=false;
-let heatLayer, heatLibrary;
+let heatLayer;
 let demoActive=false, redrawTimer;
 map.on('moveend',()=>{if(!layer)return;clearTimeout(redrawTimer);redrawTimer=setTimeout(()=>draw(),80);});
 function attributes(f){
@@ -87,13 +87,38 @@ function consumerPanel(payload,title,showList=false){
 function featureKey(f){return JSON.stringify([f._sucuri_dataset??'',feederOf(f),f.properties?.COD_ID??'',f.properties?.tipo_no??f.properties?.tipo??'',f.geometry?.type,f.geometry?.coordinates]);}
 function isSelected(f){return featureKey(f)===selectedFeatureKey;}
 function hasPowerflow(f){return f.properties?.voltage_avg_pu!=null;}
-function loadHeatLibrary(){if(window.L.heatLayer)return Promise.resolve();if(heatLibrary)return heatLibrary;heatLibrary=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://unpkg.com/leaflet.heat/dist/leaflet-heat.js';script.onload=resolve;script.onerror=()=>reject(Error('Não foi possível carregar a camada de calor.'));document.head.append(script);});return heatLibrary;}
+function heatColor(value){
+  const stops=[[.0,[44,207,123]],[.38,[205,233,93]],[.62,[255,211,77]],[.82,[255,134,63]],[1,[233,62,69]]];
+  const target=Math.min(1,Math.max(0,value));let left=stops[0],right=stops.at(-1);
+  for(let index=1;index<stops.length;index++){if(target<=stops[index][0]){left=stops[index-1];right=stops[index];break;}}
+  const ratio=(target-left[0])/(right[0]-left[0]||1),rgb=left[1].map((channel,index)=>Math.round(channel+(right[1][index]-channel)*ratio));
+  return `rgb(${rgb.join(',')})`;
+}
+class VoltageHeatLayer extends L.Layer{
+  constructor(points){super();this.points=points;}
+  onAdd(map){
+    this.map=map;this.canvas=L.DomUtil.create('canvas','voltage-heat-layer',map.getPane('voltageHeatPane'));
+    this.canvas.style.pointerEvents='none';this.redraw=this.redraw.bind(this);map.on('moveend zoomend resize',this.redraw);this.redraw();
+  }
+  onRemove(map){map.off('moveend zoomend resize',this.redraw);this.canvas?.remove();this.canvas=null;}
+  redraw(){
+    if(!this.canvas)return;const size=this.map.getSize(),pixelRatio=Math.min(window.devicePixelRatio||1,2);
+    this.canvas.width=size.x*pixelRatio;this.canvas.height=size.y*pixelRatio;this.canvas.style.width=`${size.x}px`;this.canvas.style.height=`${size.y}px`;
+    const context=this.canvas.getContext('2d');context.scale(pixelRatio,pixelRatio);const radius=this.map.getZoom()>=16?95:68;
+    for(const point of this.points){const position=this.map.latLngToContainerPoint([point.latitude,point.longitude]);if(position.x<-radius||position.y<-radius||position.x>size.x+radius||position.y>size.y+radius)continue;
+      const gradient=context.createRadialGradient(position.x,position.y,0,position.x,position.y,radius);const color=heatColor(point.intensity);
+      gradient.addColorStop(0,color.replace('rgb(','rgba(').replace(')',',0.30)'));gradient.addColorStop(.32,color.replace('rgb(','rgba(').replace(')',',0.16)'));gradient.addColorStop(1,color.replace('rgb(','rgba(').replace(')',',0)'));
+      context.fillStyle=gradient;context.beginPath();context.arc(position.x,position.y,radius,0,Math.PI*2);context.fill();
+    }
+  }
+}
+map.createPane('voltageHeatPane');map.getPane('voltageHeatPane').style.zIndex=350;
 function updateHeatmap(){
   if(heatLayer){map.removeLayer(heatLayer);heatLayer=null;}
   if(!powerFlowVisible||!data)return;
-  const points=data.features.filter(feature=>feature.geometry?.type==='Point'&&hasPowerflow(feature)).map(feature=>{const [longitude,latitude]=feature.geometry.coordinates;return [latitude,longitude,Math.min(1,Math.max(.08,(numeric(feature.properties.voltage_avg_pu)-.7)/.5))];});
+  const points=data.features.filter(feature=>feature.geometry?.type==='Point'&&hasPowerflow(feature)).map(feature=>{const [longitude,latitude]=feature.geometry.coordinates;return {latitude,longitude,intensity:Math.min(1,Math.max(.08,(numeric(feature.properties.voltage_avg_pu)-.7)/.5))};});
   if(!points.length)return;
-  loadHeatLibrary().then(()=>{if(!powerFlowVisible||heatLayer)return;heatLayer=L.heatLayer(points,{radius:52,blur:40,maxZoom:17,minOpacity:.3,gradient:{0:'#2ccf7b',.38:'#cde95d',.62:'#ffd34d',.82:'#ff863f',1:'#e93e45'}}).addTo(map);}).catch(error=>status(error.message));
+  heatLayer=new VoltageHeatLayer(points).addTo(map);
 }
 function style(f){const active=!$('feeder').value || feederOf(f)===$('feeder').value,selected=isSelected(f),key=category(f);return {color:selected?'#ffffff':categories[key].color,weight:f.geometry.type==='Point'?(selected?3:1):(selected?5:(active?2:1)),opacity:active?1:.16,fillOpacity:selected?1:(active?.85:.16),radius:selected?Math.max(map.getZoom()>=16?7:6,6):(map.getZoom()>=16?5:3.5)};}
 function consumerAnchorIcon(f){
