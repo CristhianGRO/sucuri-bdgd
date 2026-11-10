@@ -11,10 +11,11 @@ import numpy as np
 
 
 class BackwardForwardSweep:
-    def __init__(self, sbase_mva=1.0, tolerance=1e-6, max_iterations=80):
+    def __init__(self, sbase_mva=1.0, tolerance=1e-6, max_iterations=150, relaxation=.35):
         self.sbase_mva = float(sbase_mva)
         self.tolerance = float(tolerance)
         self.max_iterations = int(max_iterations)
+        self.relaxation = float(relaxation)
 
     @staticmethod
     def _complex_voltage():
@@ -115,11 +116,16 @@ class BackwardForwardSweep:
             for node in order[1:]:
                 predecessor = parent[node]
                 z = self._z_pu(tree_edges[node], bases[predecessor])
-                voltages[node] = voltages[predecessor] - z @ currents[node]
+                candidate = voltages[predecessor] - z @ currents[node]
+                # Relaxação evita a oscilação numérica comum em alimentadores
+                # longos, fortemente carregados e multifásicos.
+                voltages[node] = self.relaxation * candidate + (1 - self.relaxation) * previous[node]
             error = max(float(np.max(np.abs(voltages[node] - previous[node]))) for node in order)
             if error < self.tolerance:
                 converged = True
                 break
+        if not converged:
+            raise RuntimeError(f'Fluxo de potência não convergiu após {self.max_iterations} iterações; resultados não foram publicados')
         for node in order:
             magnitude = np.abs(voltages[node])
             graph.nodes[node].update({

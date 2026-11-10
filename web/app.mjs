@@ -18,6 +18,7 @@ const networks=new NetworkCollection();
 const enabledCategories=new Set(Object.keys(categories));
 let selectedFeatureKey='';
 let powerFlowVisible=false;
+let heatLayer, heatLibrary;
 let demoActive=false, redrawTimer;
 map.on('moveend',()=>{if(!layer)return;clearTimeout(redrawTimer);redrawTimer=setTimeout(()=>draw(),80);});
 function attributes(f){
@@ -85,8 +86,15 @@ function consumerPanel(payload,title,showList=false){
 }
 function featureKey(f){return JSON.stringify([f._sucuri_dataset??'',feederOf(f),f.properties?.COD_ID??'',f.properties?.tipo_no??f.properties?.tipo??'',f.geometry?.type,f.geometry?.coordinates]);}
 function isSelected(f){return featureKey(f)===selectedFeatureKey;}
-function voltageColor(value){const fraction=Math.min(1,Math.max(0,(numeric(value)-.7)/.5)),hue=130*(1-fraction);return `hsl(${hue} 78% 48%)`;}
 function hasPowerflow(f){return f.properties?.voltage_avg_pu!=null;}
+function loadHeatLibrary(){if(window.L.heatLayer)return Promise.resolve();if(heatLibrary)return heatLibrary;heatLibrary=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://unpkg.com/leaflet.heat/dist/leaflet-heat.js';script.onload=resolve;script.onerror=()=>reject(Error('Não foi possível carregar a camada de calor.'));document.head.append(script);});return heatLibrary;}
+function updateHeatmap(){
+  if(heatLayer){map.removeLayer(heatLayer);heatLayer=null;}
+  if(!powerFlowVisible||!data)return;
+  const points=data.features.filter(feature=>feature.geometry?.type==='Point'&&hasPowerflow(feature)).map(feature=>{const [longitude,latitude]=feature.geometry.coordinates;return [latitude,longitude,Math.min(1,Math.max(.08,(numeric(feature.properties.voltage_avg_pu)-.7)/.5))];});
+  if(!points.length)return;
+  loadHeatLibrary().then(()=>{if(!powerFlowVisible||heatLayer)return;heatLayer=L.heatLayer(points,{radius:52,blur:40,maxZoom:17,minOpacity:.3,gradient:{0:'#2ccf7b',.38:'#cde95d',.62:'#ffd34d',.82:'#ff863f',1:'#e93e45'}}).addTo(map);}).catch(error=>status(error.message));
+}
 function style(f){const active=!$('feeder').value || feederOf(f)===$('feeder').value,selected=isSelected(f),key=category(f);return {color:selected?'#ffffff':categories[key].color,weight:f.geometry.type==='Point'?(selected?3:1):(selected?5:(active?2:1)),opacity:active?1:.16,fillOpacity:selected?1:(active?.85:.16),radius:selected?Math.max(map.getZoom()>=16?7:6,6):(map.getZoom()>=16?5:3.5)};}
 function consumerAnchorIcon(f){
   const consumers=(f.properties.consumers??[]).slice(0,24),count=Number(f.properties.consumer_count??consumers.length),dots=consumers.map((consumer,index)=>{const angle=Math.round(index/Math.max(consumers.length,1)*360),radius=24+(index%3)*7;return `<i class="consumer-dot" style="--consumer-angle:${angle}deg;--consumer-radius:${radius}px;background:${consumerColor(consumer.class)}"></i>`;}).join('');
@@ -100,7 +108,6 @@ function consumerClusterIcon(f){
 }
 function pointLayer(f,ll){
   const key=category(f);
-  if(powerFlowVisible&&hasPowerflow(f))return L.circleMarker(ll,{...style(f),color:voltageColor(f.properties.voltage_avg_pu),fillColor:voltageColor(f.properties.voltage_avg_pu),weight:isSelected(f)?3:0,fillOpacity:.62,radius:isSelected(f)?30:22});
   if(String(f.properties.tipo||'').toUpperCase()==='CONSUMERCLUSTER')return L.marker(ll,{icon:consumerClusterIcon(f),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:`${f.properties.consumer_count} consumidores nesta região`,riseOnHover:true,riseOffset:1100});
   if(key==='consumers')return L.marker(ll,{icon:consumerAnchorIcon(f),opacity:!$('feeder').value||feederOf(f)===$('feeder').value?1:.16,title:`${f.properties.consumer_count} consumidores conectados`,riseOnHover:true,riseOffset:1100});
   if(['res','com','ind','load','transformer','substation'].includes(key)){
@@ -150,6 +157,7 @@ function draw(fit=false){
     });
     l.on('click',()=>{selectedFeatureKey=featureKey(f);$('feeder').value=feederOf(f);$('details').replaceChildren(attributes(f));$('details').parentElement.open=true;const bounds=l.getBounds?.();if(bounds?.isValid?.())map.fitBounds(bounds,{padding:[90,90],maxZoom:17});else if(l.getLatLng)map.setView(l.getLatLng(),Math.max(map.getZoom(),16));draw();});
   }}).addTo(map);
+  updateHeatmap();
   $('count').textContent=visible.features.length.toLocaleString('pt-BR');
   $('geojson').disabled=$('kmz').disabled=!id;
   if(fit) zoom();
