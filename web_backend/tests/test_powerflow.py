@@ -19,6 +19,18 @@ class BackwardForwardSweepTests(TestCase):
         self.assertGreater(graph['SE']['LOAD']['pf_p_kw'], 300)
         self.assertGreater(graph['SE']['LOAD']['pf_current_a'], 0)
 
+    def test_converged_solution_is_a_hot_start_for_the_next_flow(self):
+        graph = nx.Graph()
+        graph.add_node('SE', tipo_no='Substation', voltage_base_kv=13.8)
+        graph.add_node('LOAD', Pa_kW=180, Qa_kVAr=70, Pb_kW=150, Qb_kVAr=55, Pc_kW=165, Qc_kVAr=60)
+        graph.add_edge('SE', 'LOAD', tipo='MV_Line', Zabc=np.eye(3, dtype=complex) * (.45 + .25j))
+        first_solver = BackwardForwardSweep()
+        cold = first_solver.solve(graph)
+        warm = BackwardForwardSweep().solve(graph, initial_voltages=first_solver.last_voltage_state)
+        self.assertTrue(warm['warm_start_used'])
+        self.assertFalse(warm['warm_start_fallback'])
+        self.assertLess(warm['iterations'], cold['iterations'])
+
     def test_reports_meshed_link_without_failing(self):
         graph = nx.Graph()
         graph.add_node('SE', tipo_no='Substation', voltage_base_kv=13.8)

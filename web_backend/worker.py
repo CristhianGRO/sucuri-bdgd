@@ -143,6 +143,35 @@ def load_electrical_graph(path):
         return pickle.load(stream)
 
 
+def _warm_start_path(jobs_root, network_key):
+    return Path(jobs_root).parent / 'powerflow_states' / (str(network_key) + '.pickle')
+
+
+def load_powerflow_warm_start(jobs_root, network_key):
+    """Lê a última solução convergida compatível, sem falhar se ela expirar."""
+    try:
+        with _warm_start_path(jobs_root, network_key).open('rb') as stream:
+            payload = pickle.load(stream)
+        if isinstance(payload, dict) and payload.get('network_key') == network_key and isinstance(payload.get('voltages'), dict):
+            return payload['voltages']
+    except (OSError, EOFError, pickle.UnpicklingError, AttributeError, ImportError):
+        pass
+    return None
+
+
+def save_powerflow_warm_start(jobs_root, network_key, voltages):
+    """Substitui atomicamente o estado convergido mais recente do alimentador."""
+    path = _warm_start_path(jobs_root, network_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name('.' + path.name + '.part')
+    try:
+        with temporary.open('wb') as stream:
+            pickle.dump({'network_key': network_key, 'voltages': voltages}, stream, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def apply_tap_overrides(graph, overrides):
     """Aplica ajustes temporários de tap a um grafo já processado.
 
@@ -598,6 +627,7 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
             if migrate_reference_table(dataset, 'TTEN', log):
                 log('TTEN migrada da GDB original; usando a tensão nominal correta no fluxo.')
             result = None
+            network_key = None
             if args.get('run_powerflow'):
                 from .result_cache import find_cached, fingerprint
                 network_key = fingerprint(dataset, ctmt, args.get('crs', 'EPSG:4326'), 'network')
@@ -625,8 +655,19 @@ def _run_job_impl(kind, args, data_root, jobs_root, cache_root, job_id, max_byte
                 adjusted = apply_tap_overrides(result['graph'], args.get('tap_overrides') or {})
                 if adjusted:
                     log(f'Aplicando ajuste de tap em {adjusted} transformador(es).')
+                warm_start = load_powerflow_warm_start(jobs_root, network_key)
+                if warm_start:
+                    log('Solução convergida anterior encontrada; preparando hot start.')
                 log('Executando fluxo de potência trifásico por varredura direta/inversa')
-                powerflow = BackwardForwardSweep().solve(result['graph'])
+                solver = BackwardForwardSweep()
+                powerflow = solver.solve(result['graph'], initial_voltages=warm_start)
+                save_powerflow_warm_start(jobs_root, network_key, solver.last_voltage_state)
+                if powerflow['warm_start_used']:
+                    log('Hot start aplicado: fluxo iniciado diretamente em 100% de carga.')
+                elif warm_start:
+                    log('Estado anterior incompatível; fluxo iniciado pela continuação de carga.')
+                if powerflow['warm_start_fallback']:
+                    log('Hot start não convergiu diretamente; continuação de carga aplicada como recuperação.')
                 log(f"Fluxo concluído: {powerflow['iterations']} iterações; Vmín={powerflow['min_voltage_pu']:.4f} pu; enlaces ignorados={powerflow['radial_links_ignored']}")
             profiles = consumer_profile_index(dataset / 'CRVCRG.csv')
             geo, missing = graph_geojson(result['graph'], ctmt, args.get('crs','EPSG:4326'), profiles)

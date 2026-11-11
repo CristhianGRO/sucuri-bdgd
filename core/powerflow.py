@@ -118,7 +118,27 @@ class BackwardForwardSweep:
         # pelo lado de alta é a corrente secundária dividida pela relação tap.
         return downstream_current / self._tap_ratio(edge)
 
-    def solve(self, graph):
+    def _warm_voltages(self, order, slack_voltage, initial_voltages):
+        """Valida uma solução anterior para usá-la como chute inicial ABC."""
+        if not isinstance(initial_voltages, dict):
+            return None
+        prepared = {}
+        for node in order:
+            value = initial_voltages.get(str(node))
+            if value is None:
+                return None
+            try:
+                voltage = np.asarray(value, dtype=complex)
+            except (TypeError, ValueError):
+                return None
+            if voltage.shape != (3,) or not np.all(np.isfinite(voltage)) or np.any(np.abs(voltage) < 1e-5):
+                return None
+            prepared[node] = voltage.copy()
+        # O nó slack nunca é estimado: o setpoint atual sempre prevalece.
+        prepared[order[0]] = slack_voltage.copy()
+        return prepared
+
+    def solve(self, graph, initial_voltages=None):
         root, parent, order, tree_edges, links = self._roots_and_tree(graph)
         bases = self._voltage_bases(graph, root, parent, order, tree_edges)
         children = {node: [] for node in order}
@@ -126,53 +146,72 @@ class BackwardForwardSweep:
             if predecessor is not None:
                 children[predecessor].append(node)
         slack_voltage = self._slack_voltage(graph, root)
-        voltages = {node: slack_voltage.copy() for node in order}
+        flat_voltages = {node: slack_voltage.copy() for node in order}
+        voltages = self._warm_voltages(order, slack_voltage, initial_voltages) or flat_voltages
         currents = {node: np.zeros(3, dtype=complex) for node in order[1:]}
+        warm_start_used = voltages is not flat_voltages
+        warm_start_fallback = False
         converged = False
         total_iterations = 0
         stage_diagnostics = []
-        # Continuação de carga: aproxima a solução gradualmente para evitar a
-        # oscilação de cargas de potência constante em redes longas.
-        for multiplier in (.2, .4, .6, .8, 1.0):
-            converged = False
-            for iteration in range(1, self.max_iterations + 1):
-                total_iterations += 1
-                injections = {node: self._load_current(graph.nodes[node], voltages[node], multiplier) for node in order}
-                for node in reversed(order[1:]):
-                    downstream = injections[node].copy()
-                    for child in children[node]:
-                        downstream += currents[child]
-                    currents[node] = self._branch_current(tree_edges[node], downstream)
-                previous = {node: value.copy() for node, value in voltages.items()}
-                voltages[root] = slack_voltage.copy()
-                for node in order[1:]:
-                    predecessor = parent[node]
-                    edge = tree_edges[node]
-                    z = self._z_pu(edge, bases[predecessor])
-                    candidate = voltages[predecessor] / self._tap_ratio(edge) - z @ currents[node]
-                    voltages[node] = self.relaxation * candidate + (1 - self.relaxation) * previous[node]
-                error = max(float(np.max(np.abs(voltages[node] - previous[node]))) for node in order)
-                if error < self.tolerance:
-                    converged = True
-                    break
-            stage_diagnostics.append({
-                'load_multiplier': multiplier,
-                'iterations': iteration,
-                'max_delta_pu': error,
-                'min_voltage_pu': min(float(np.min(np.abs(value))) for value in voltages.values()),
-                'max_voltage_pu': max(float(np.max(np.abs(value))) for value in voltages.values()),
-            })
+        def run_stages(multipliers, mode):
+            nonlocal converged, total_iterations
+            for multiplier in multipliers:
+                converged = False
+                for iteration in range(1, self.max_iterations + 1):
+                    total_iterations += 1
+                    injections = {node: self._load_current(graph.nodes[node], voltages[node], multiplier) for node in order}
+                    for node in reversed(order[1:]):
+                        downstream = injections[node].copy()
+                        for child in children[node]:
+                            downstream += currents[child]
+                        currents[node] = self._branch_current(tree_edges[node], downstream)
+                    previous = {node: value.copy() for node, value in voltages.items()}
+                    voltages[root] = slack_voltage.copy()
+                    for node in order[1:]:
+                        predecessor = parent[node]
+                        edge = tree_edges[node]
+                        z = self._z_pu(edge, bases[predecessor])
+                        candidate = voltages[predecessor] / self._tap_ratio(edge) - z @ currents[node]
+                        voltages[node] = self.relaxation * candidate + (1 - self.relaxation) * previous[node]
+                    error = max(float(np.max(np.abs(voltages[node] - previous[node]))) for node in order)
+                    if error < self.tolerance:
+                        converged = True
+                        break
+                stage_diagnostics.append({
+                    'mode': mode,
+                    'load_multiplier': multiplier,
+                    'iterations': iteration,
+                    'max_delta_pu': error,
+                    'min_voltage_pu': min(float(np.min(np.abs(value))) for value in voltages.values()),
+                    'max_voltage_pu': max(float(np.max(np.abs(value))) for value in voltages.values()),
+                })
+                if not converged:
+                    return False
+            return True
+
+        # Uma solução convergida recente normalmente permite resolver direto em
+        # 100% de carga. Se ela não for adequada, preservamos a continuação
+        # gradual como mecanismo de recuperação robusto.
+        if warm_start_used:
+            converged = run_stages((1.0,), 'hot_start')
             if not converged:
-                break
+                warm_start_fallback = True
+                voltages = {node: value.copy() for node, value in flat_voltages.items()}
+                currents = {node: np.zeros(3, dtype=complex) for node in order[1:]}
         if not converged:
-            self.last_diagnostics = {'stages': stage_diagnostics, 'iterations': total_iterations}
+            converged = run_stages((.2, .4, .6, .8, 1.0), 'continuation')
+        if not converged:
+            self.last_voltage_state = None
+            self.last_diagnostics = {'stages': stage_diagnostics, 'iterations': total_iterations, 'warm_start_used': warm_start_used, 'warm_start_fallback': warm_start_fallback}
             last = stage_diagnostics[-1]
             raise RuntimeError(
                 f"Fluxo de potência não convergiu após {self.max_iterations} iterações "
                 f"(carga={last['load_multiplier']:.0%}, ΔV={last['max_delta_pu']:.3e} pu); "
                 "resultados não foram publicados"
             )
-        self.last_diagnostics = {'stages': stage_diagnostics, 'iterations': total_iterations}
+        self.last_voltage_state = {str(node): value.copy() for node, value in voltages.items()}
+        self.last_diagnostics = {'stages': stage_diagnostics, 'iterations': total_iterations, 'warm_start_used': warm_start_used, 'warm_start_fallback': warm_start_fallback}
         for node in order:
             magnitude = np.abs(voltages[node])
             graph.nodes[node].update({
@@ -202,6 +241,8 @@ class BackwardForwardSweep:
             'method': 'Backward/Forward Sweep trifásico ABC',
             'converged': converged,
             'iterations': total_iterations,
+            'warm_start_used': warm_start_used,
+            'warm_start_fallback': warm_start_fallback,
             'radial_links_ignored': len(links),
             'min_voltage_pu': min(data['voltage_min_pu'] for _, data in graph.nodes(data=True)),
             'max_voltage_pu': max(data['voltage_avg_pu'] for _, data in graph.nodes(data=True)),

@@ -7,7 +7,7 @@ import networkx as nx
 import numpy as np
 from web_backend.server import Service
 from web_backend.result_cache import fingerprint,write_json,publish_cached,find_cached
-from web_backend.worker import run_job, save_electrical_graph, load_electrical_graph
+from web_backend.worker import run_job, save_electrical_graph, load_electrical_graph, save_powerflow_warm_start, load_powerflow_warm_start
 
 class PersistentCacheTests(TestCase):
     def test_completed_worker_reused_after_restart_and_invalidated(self):
@@ -71,6 +71,15 @@ class PersistentCacheTests(TestCase):
             base = fingerprint(dataset, 'F1', 'EPSG:4326', 'powerflow')
             adjusted = fingerprint(dataset, 'F1', 'EPSG:4326', 'powerflow', {'TR_1': .95})
             self.assertNotEqual(base, adjusted)
+
+    def test_last_converged_powerflow_state_is_saved_by_network_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs = Path(tmp)/'runtime'/'jobs'; key = 'network-key'
+            voltages = {'SE': np.array([1 + 0j, -0.5j, 0.5j])}
+            save_powerflow_warm_start(jobs, key, voltages)
+            restored = load_powerflow_warm_start(jobs, key)
+            self.assertTrue(np.array_equal(restored['SE'], voltages['SE']))
+            self.assertIsNone(load_powerflow_warm_start(jobs, 'different-network'))
 
     def test_electrical_graph_cache_keeps_abc_matrices(self):
         with tempfile.TemporaryDirectory() as tmp:
